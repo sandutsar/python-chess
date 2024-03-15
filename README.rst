@@ -59,7 +59,7 @@ python-chess:
 Installing
 ----------
 
-Download and install the latest release:
+Requires Python 3.8+. Download and install the latest release:
 
 ::
 
@@ -81,7 +81,7 @@ Download and install the latest release:
 Features
 --------
 
-* Supports Python 3.7+. Includes mypy typings.
+* Includes mypy typings.
 
 * IPython/Jupyter Notebook integration.
   `SVG rendering docs <https://python-chess.readthedocs.io/en/latest/svg.html>`_.
@@ -131,7 +131,7 @@ Features
       >>> board.is_insufficient_material()
       False
       >>> board.outcome()
-      Outcome(termination=Termination.CHECKMATE, winner=True)
+      Outcome(termination=<Termination.CHECKMATE: 1>, winner=True)
 
 * Detects repetitions. Has a half-move clock.
 
@@ -300,40 +300,46 @@ Selected projects
 
 If you like, share interesting things you are using python-chess for, for example:
 
-+------------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------------------+
-| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/syzygy.png?raw=true       | https://syzygy-tables.info/                                                             |
-|     :height: 64                                                                                      |                                                                                         |
-|     :width: 64                                                                                       |                                                                                         |
-|     :target: https://syzygy-tables.info/                                                             | A website to probe Syzygy endgame tablebases                                            |
-+------------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------------------+
-| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/maia.png?raw=true         | https://maiachess.com/                                                                  |
-|     :height: 64                                                                                      |                                                                                         |
-|     :width: 64                                                                                       |                                                                                         |
-|     :target: https://maiachess.com/                                                                  | A human-like neural network chess engine                                                |
-+------------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------------------+
-| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/clente-chess.png?raw=true | `clente/chess <https://github.com/clente/chess>`_                                       |
-|     :height: 64                                                                                      |                                                                                         |
-|     :width: 64                                                                                       |                                                                                         |
-|     :target: https://github.com/clente/chess                                                         | Oppinionated wrapper to use python-chess from the R programming language                |
-+------------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------------------+
-| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/crazyara.png?raw=true     | https://crazyara.org/                                                                   |
-|     :height: 64                                                                                      |                                                                                         |
-|     :width: 64                                                                                       |                                                                                         |
-|     :target: https://crazyara.org/                                                                   | Deep learning for Crazyhouse                                                            |
-+------------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------------------+
-| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/jcchess.png?raw=true      | `http://johncheetham.com <http://johncheetham.com/projects/jcchess/>`_                  |
-|     :height: 64                                                                                      |                                                                                         |
-|     :width: 64                                                                                       |                                                                                         |
-|     :target: http://johncheetham.com/projects/jcchess/                                               | A GUI to play against UCI chess engines                                                 |
-+------------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------------------+
-| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/pettingzoo.png?raw=true   | `https://www.pettingzoo.ml <https://www.pettingzoo.ml/classic/chess>`_                  |
-|     :width: 64                                                                                       |                                                                                         |
-|     :height: 64                                                                                      |                                                                                         |
-|     :target: https://www.pettingzoo.ml/classic/chess                                                 | A multi-agent reinforcement learning environment                                        |
-+------------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------------------+
++------------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
+| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/syzygy.png?raw=true       | https://syzygy-tables.info/                                                                  |
+|     :height: 64                                                                                      |                                                                                              |
+|     :width: 64                                                                                       |                                                                                              |
+|     :target: https://syzygy-tables.info/                                                             | A website to probe Syzygy endgame tablebases                                                 |
++------------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
+| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/maia.png?raw=true         | https://maiachess.com/                                                                       |
+|     :height: 64                                                                                      |                                                                                              |
+|     :width: 64                                                                                       |                                                                                              |
+|     :target: https://maiachess.com/                                                                  | A human-like neural network chess engine                                                     |
++------------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
+| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/clente-chess.png?raw=true | `clente/chess <https://github.com/clente/chess>`_                                            |
+|     :height: 64                                                                                      |                                                                                              |
+|     :width: 64                                                                                       |                                                                                              |
+|     :target: https://github.com/clente/chess                                                         | Oppinionated wrapper to use python-chess from the R programming language                     |
++------------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
+| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/crazyara.png?raw=true     | https://crazyara.org/                                                                        |
+|     :height: 64                                                                                      |                                                                                              |
+|     :width: 64                                                                                       |                                                                                              |
+|     :target: https://crazyara.org/                                                                   | Deep learning for Crazyhouse                                                                 |
++------------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
+| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/jcchess.png?raw=true      | `http://johncheetham.com <http://johncheetham.com/projects/jcchess/>`_                       |
+|     :height: 64                                                                                      |                                                                                              |
+|     :width: 64                                                                                       |                                                                                              |
+|     :target: http://johncheetham.com/projects/jcchess/                                               | A GUI to play against UCI chess engines                                                      |
++------------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
+| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/pettingzoo.png?raw=true   | `https://pettingzoo.farama.org <https://pettingzoo.farama.org/environments/classic/chess/>`_ |
+|     :width: 64                                                                                       |                                                                                              |
+|     :height: 64                                                                                      |                                                                                              |
+|     :target: https://pettingzoo.farama.org/environments/classic/chess/                               | A multi-agent reinforcement learning environment                                             |
++------------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
+| .. image:: https://github.com/niklasf/python-chess/blob/master/docs/images/cli-chess.png?raw=true    | `cli-chess <https://github.com/trevorbayless/cli-chess>`_                                    |
+|     :width: 64                                                                                       |                                                                                              |
+|     :height: 64                                                                                      |                                                                                              |
+|     :target: https://github.com/trevorbayless/cli-chess                                              | A highly customizable way to play chess in your terminal                                     |
++------------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------+
 
-* a stand-alone chess computer based on DGT board – http://www.picochess.org/
-* a bridge between Lichess API and chess engines – https://github.com/careless25/lichess-bot
+* extensions to build engines (search and evaluation) – https://github.com/Mk-Chan/python-chess-engine-extensions
+* a stand-alone chess computer based on DGT board – https://picochess.com/
+* a bridge between Lichess API and chess engines – https://github.com/lichess-bot-devs/lichess-bot
 * a command-line PGN annotator – https://github.com/rpdelaney/python-chess-annotator
 * an HTTP microservice to render board images – https://github.com/niklasf/web-boardimage
 * building a toy chess engine with alpha-beta pruning, piece-square tables, and move ordering – https://healeycodes.com/building-my-own-chess-engine/
@@ -342,9 +348,13 @@ If you like, share interesting things you are using python-chess for, for exampl
 * an `Alexa skill to play blindfold chess <https://www.amazon.com/Laynr-blindfold-chess/dp/B0859QF8YL>`_ – https://github.com/laynr/blindfold-chess
 * a chessboard widget for PySide2 – https://github.com/H-a-y-k/hichesslib
 * Django Rest Framework API for multiplayer chess – https://github.com/WorkShoft/capablanca-api
+* a `browser based PGN viewer <https://about.nmstoker.com/chess2.html>`_ written in PyScript – https://github.com/nmstoker/ChessMatchViewer
+* an accessible chessboard that allows blind and visually impaired  players  to play chess against Stockfish – https://github.com/blindpandas/chessmart
+* analyse games to extract various statistics – https://github.com/mvrozanti/chess-playground
 
-Acknowledgements
-----------------
+
+Prior art
+---------
 
 Thanks to the Stockfish authors and thanks to Sam Tannous for publishing his
 approach to `avoid rotated bitboards with direct lookup (PDF) <http://arxiv.org/pdf/0704.3773.pdf>`_
@@ -362,4 +372,4 @@ License
 -------
 
 python-chess is licensed under the GPL 3 (or any later version at your option).
-Check out LICENSE.txt for the full text.
+Check out ``LICENSE.txt`` for the full text.

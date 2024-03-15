@@ -1,22 +1,7 @@
-# This file is part of the python-chess library.
-# Copyright (C) 2012-2021 Niklas Fiekas <niklas.fiekas@backscattering.de>
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
-
 from __future__ import annotations
 
 import abc
+import dataclasses
 import enum
 import itertools
 import logging
@@ -27,15 +12,8 @@ import chess
 import chess.engine
 import chess.svg
 
-from typing import Any, Callable, Dict, Generic, Iterable, Iterator, List, Mapping, MutableMapping, Set, TextIO, Tuple, Type, TypeVar, Optional, Union
+from typing import Any, Callable, Dict, Generic, Iterable, Iterator, List, Literal, Mapping, MutableMapping, Set, TextIO, Tuple, Type, TypeVar, Optional, Union
 from chess import Color, Square
-
-try:
-    from typing import Literal
-    _TrueLiteral = Literal[True]
-except ImportError:
-    # Before Python 3.8.
-    _TrueLiteral = bool  # type: ignore
 
 
 LOGGER = logging.getLogger(__name__)
@@ -93,9 +71,9 @@ NAG_BLACK_SEVERE_TIME_PRESSURE = 139
 NAG_NOVELTY = 146
 
 
-TAG_REGEX = re.compile(r"^\[([A-Za-z0-9_]+)\s+\"([^\r]*)\"\]\s*$")
+TAG_REGEX = re.compile(r"^\[([A-Za-z0-9][A-Za-z0-9_+#=:-]*)\s+\"([^\r]*)\"\]\s*$")
 
-TAG_NAME_REGEX = re.compile(r"^[A-Za-z0-9_]+\Z")
+TAG_NAME_REGEX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_+#=:-]*\Z")
 
 MOVETEXT_REGEX = re.compile(r"""
     (
@@ -120,24 +98,36 @@ MOVETEXT_REGEX = re.compile(r"""
 SKIP_MOVETEXT_REGEX = re.compile(r""";|\{|\}""")
 
 
-CLOCK_REGEX = re.compile(r"""\[%clk\s(\d+):(\d+):(\d+(?:\.\d*)?)\]""")
-EMT_REGEX = re.compile(r"""\[%emt\s(\d+):(\d+):(\d+(?:\.\d*)?)\]""")
+CLOCK_REGEX = re.compile(r"""(?P<prefix>\s?)\[%clk\s(?P<hours>\d+):(?P<minutes>\d+):(?P<seconds>\d+(?:\.\d*)?)\](?P<suffix>\s?)""")
+EMT_REGEX = re.compile(r"""(?P<prefix>\s?)\[%emt\s(?P<hours>\d+):(?P<minutes>\d+):(?P<seconds>\d+(?:\.\d*)?)\](?P<suffix>\s?)""")
 
 EVAL_REGEX = re.compile(r"""
+    (?P<prefix>\s?)
     \[%eval\s(?:
-        \#([+-]?\d+)
-        |([+-]?(?:\d{0,10}\.\d{1,2}|\d{1,10}\.?))
+        \#(?P<mate>[+-]?\d+)
+        |(?P<cp>[+-]?(?:\d{0,10}\.\d{1,2}|\d{1,10}\.?))
     )(?:
-        ,(\d+)
+        ,(?P<depth>\d+)
     )?\]
+    (?P<suffix>\s?)
     """, re.VERBOSE)
 
 ARROWS_REGEX = re.compile(r"""
-    \[%(?:csl|cal)\s(
+    (?P<prefix>\s?)
+    \[%(?:csl|cal)\s(?P<arrows>
         [RGYB][a-h][1-8](?:[a-h][1-8])?
         (?:,[RGYB][a-h][1-8](?:[a-h][1-8])?)*
     )\]
+    (?P<suffix>\s?)
     """, re.VERBOSE)
+
+def _condense_affix(infix: str) -> Callable[[typing.Match[str]], str]:
+    def repl(match: typing.Match[str]) -> str:
+        if infix:
+            return match.group("prefix") + infix + match.group("suffix")
+        else:
+            return match.group("prefix") and match.group("suffix")
+    return repl
 
 
 TAG_ROSTER = ["Event", "Site", "Date", "Round", "White", "Black", "Result"]
@@ -150,6 +140,39 @@ SKIP = SkipType.SKIP
 
 
 ResultT = TypeVar("ResultT", covariant=True)
+
+
+class TimeControlType(enum.Enum):
+    UNKNOW = 0
+    UNLIMITED = 1
+    STANDARD = 2
+    RAPID = 3
+    BLITZ = 4
+    BULLET = 5
+
+
+@dataclasses.dataclass
+class TimeControlPart:
+    moves: int = 0
+    time: int = 0
+    increment: float = 0
+    delay: float = 0
+
+
+@dataclasses.dataclass
+class TimeControl:
+    """
+    PGN TimeControl Parser
+    Spec: http://www.saremba.de/chessgml/standards/pgn/pgn-complete.htm#c9.6
+
+    Not Yet Implemented:
+    - Hourglass/Sandclock ('*' prefix)
+    - Differentiating between Bronstein and Simple Delay (Not part of the PGN Spec)
+      - More Info: https://en.wikipedia.org/wiki/Chess_clock#Timing_methods
+    """
+
+    parts: list[TimeControlPart] = dataclasses.field(default_factory=list)
+    type: TimeControlType = TimeControlType.UNKNOW
 
 
 class _AcceptFrame:
@@ -203,6 +226,8 @@ class GameNode(abc.ABC):
         ``Variant``) unless the ``FEN`` header tag is set.
 
         It's a copy, so modifying the board will not alter the game.
+
+        Complexity is `O(n)`.
         """
 
     @abc.abstractmethod
@@ -214,11 +239,15 @@ class GameNode(abc.ABC):
 
         Usually this is equal to the number of parent nodes, but it may be
         more if the game was started from a custom position.
+
+        Complexity is `O(n)`.
         """
 
     def turn(self) -> Color:
         """
         Gets the color to move at this node. See :data:`chess.Board.turn`.
+
+        Complexity is `O(n)`.
         """
         return self.ply() % 2 == 0
 
@@ -229,13 +258,21 @@ class GameNode(abc.ABC):
         return node
 
     def game(self) -> Game:
-        """Gets the root node, i.e., the game."""
+        """
+        Gets the root node, i.e., the game.
+
+        Complexity is `O(n)`.
+        """
         root = self.root()
         assert isinstance(root, Game), "GameNode not rooted in Game"
         return root
 
     def end(self) -> GameNode:
-        """Follows the main variation to the end and returns the last node."""
+        """
+        Follows the main variation to the end and returns the last node.
+
+        Complexity is `O(n)`.
+        """
         node = self
 
         while node.variations:
@@ -244,7 +281,11 @@ class GameNode(abc.ABC):
         return node
 
     def is_end(self) -> bool:
-        """Checks if this node is the last node in the current variation."""
+        """
+        Checks if this node is the last node in the current variation.
+
+        Complexity is `O(1)`.
+        """
         return not self.variations
 
     def starts_variation(self) -> bool:
@@ -255,6 +296,8 @@ class GameNode(abc.ABC):
 
         For example, in ``1. e4 e5 (1... c5 2. Nf3) 2. Nf3``, the node holding
         1... c5 starts a variation.
+
+        Complexity is `O(1)`.
         """
         if not self.parent or not self.parent.variations:
             return False
@@ -262,7 +305,11 @@ class GameNode(abc.ABC):
         return self.parent.variations[0] != self
 
     def is_mainline(self) -> bool:
-        """Checks if the node is in the mainline of the game."""
+        """
+        Checks if the node is in the mainline of the game.
+
+        Complexity is `O(n)`.
+        """
         node = self
 
         while node.parent:
@@ -279,6 +326,8 @@ class GameNode(abc.ABC):
         """
         Checks if this node is the first variation from the point of view of its
         parent. The root node is also in the main variation.
+
+        Complexity is `O(1)`.
         """
         if not self.parent:
             return True
@@ -355,6 +404,8 @@ class GameNode(abc.ABC):
         """
         Returns the first node of the mainline after this node, or ``None`` if
         this node does not have any children.
+
+        Complexity is `O(1)`.
         """
         return self.variations[0] if self.variations else None
 
@@ -392,6 +443,8 @@ class GameNode(abc.ABC):
         """
         Parses the first valid ``[%eval ...]`` annotation in the comment of
         this node, if any.
+
+        Complexity is `O(n)`.
         """
         match = EVAL_REGEX.search(self.comment)
         if not match:
@@ -399,8 +452,8 @@ class GameNode(abc.ABC):
 
         turn = self.turn()
 
-        if match.group(1):
-            mate = int(match.group(1))
+        if match.group("mate"):
+            mate = int(match.group("mate"))
             score: chess.engine.Score = chess.engine.Mate(mate)
             if mate == 0:
                 # Resolve this ambiguity in the specification in favor of
@@ -408,7 +461,7 @@ class GameNode(abc.ABC):
                 # who has been mated.
                 return chess.engine.PovScore(score, turn)
         else:
-            score = chess.engine.Cp(int(float(match.group(2)) * 100))
+            score = chess.engine.Cp(round(float(match.group("cp")) * 100))
 
         return chess.engine.PovScore(score if turn else -score, turn)
 
@@ -416,9 +469,11 @@ class GameNode(abc.ABC):
         """
         Parses the first valid ``[%eval ...]`` annotation in the comment of
         this node and returns the corresponding depth, if any.
+
+        Complexity is `O(1)`.
         """
         match = EVAL_REGEX.search(self.comment)
-        return int(match.group(3)) if match and match.group(3) else None
+        return int(match.group("depth")) if match and match.group("depth") else None
 
     def set_eval(self, score: Optional[chess.engine.PovScore], depth: Optional[int] = None) -> None:
         """
@@ -434,7 +489,7 @@ class GameNode(abc.ABC):
             elif score.white().mate():
                 eval = f"[%eval #{score.white().mate()}{depth_suffix}]"
 
-        self.comment, found = EVAL_REGEX.subn(eval, self.comment, count=1)
+        self.comment, found = EVAL_REGEX.subn(_condense_affix(eval), self.comment, count=1)
 
         if not found and eval:
             if self.comment and not self.comment.endswith(" "):
@@ -450,7 +505,7 @@ class GameNode(abc.ABC):
         """
         arrows = []
         for match in ARROWS_REGEX.finditer(self.comment):
-            for group in match.group(1).split(","):
+            for group in match.group("arrows").split(","):
                 arrows.append(chess.svg.Arrow.from_pgn(group))
 
         return arrows
@@ -471,7 +526,7 @@ class GameNode(abc.ABC):
                 pass
             (csl if arrow.tail == arrow.head else cal).append(arrow.pgn())  # type: ignore
 
-        self.comment = ARROWS_REGEX.sub("", self.comment).strip()
+        self.comment = ARROWS_REGEX.sub(_condense_affix(""), self.comment)
 
         prefix = ""
         if csl:
@@ -479,8 +534,10 @@ class GameNode(abc.ABC):
         if cal:
             prefix += f"[%cal {','.join(cal)}]"
 
-        if prefix:
-            self.comment = prefix + " " + self.comment if self.comment else prefix
+        if prefix and self.comment and not self.comment.startswith(" ") and not self.comment.startswith("\n"):
+            self.comment = prefix + " " + self.comment
+        else:
+            self.comment = prefix + self.comment
 
     def clock(self) -> Optional[float]:
         """
@@ -493,7 +550,7 @@ class GameNode(abc.ABC):
         match = CLOCK_REGEX.search(self.comment)
         if match is None:
             return None
-        return int(match.group(1)) * 3600 + int(match.group(2)) * 60 + float(match.group(3))
+        return int(match.group("hours")) * 3600 + int(match.group("minutes")) * 60 + float(match.group("seconds"))
 
     def set_clock(self, seconds: Optional[float]) -> None:
         """
@@ -509,10 +566,10 @@ class GameNode(abc.ABC):
             seconds_part = f"{seconds:06.3f}".rstrip("0").rstrip(".")
             clk = f"[%clk {hours:d}:{minutes:02d}:{seconds_part}]"
 
-        self.comment, found = CLOCK_REGEX.subn(clk, self.comment, count=1)
+        self.comment, found = CLOCK_REGEX.subn(_condense_affix(clk), self.comment, count=1)
 
         if not found and clk:
-            if self.comment and not self.comment.endswith(" "):
+            if self.comment and not self.comment.endswith(" ") and not self.comment.endswith("\n"):
                 self.comment += " "
             self.comment += clk
 
@@ -527,7 +584,7 @@ class GameNode(abc.ABC):
         match = EMT_REGEX.search(self.comment)
         if match is None:
             return None
-        return int(match.group(1)) * 3600 + int(match.group(2)) * 60 + float(match.group(3))
+        return int(match.group("hours")) * 3600 + int(match.group("minutes")) * 60 + float(match.group("seconds"))
 
     def set_emt(self, seconds: Optional[float]) -> None:
         """
@@ -543,10 +600,10 @@ class GameNode(abc.ABC):
             seconds_part = f"{seconds:06.3f}".rstrip("0").rstrip(".")
             emt = f"[%emt {hours:d}:{minutes:02d}:{seconds_part}]"
 
-        self.comment, found = EMT_REGEX.subn(emt, self.comment, count=1)
+        self.comment, found = EMT_REGEX.subn(_condense_affix(emt), self.comment, count=1)
 
         if not found and emt:
-            if self.comment and not self.comment.endswith(" "):
+            if self.comment and not self.comment.endswith(" ") and not self.comment.endswith("\n"):
                 self.comment += " "
             self.comment += emt
 
@@ -656,6 +713,8 @@ class ChildNode(GameNode):
         See :func:`chess.Board.san()`.
 
         Do not call this on the root node.
+
+        Complexity is `O(n)`.
         """
         return self.parent.board().san(self.move)
 
@@ -665,11 +724,17 @@ class ChildNode(GameNode):
         See :func:`chess.Board.uci()`.
 
         Do not call this on the root node.
+
+        Complexity is `O(n)`.
         """
         return self.parent.board().uci(self.move, chess960=chess960)
 
     def end(self) -> ChildNode:
-        """Follows the main variation to the end and returns the last node."""
+        """
+        Follows the main variation to the end and returns the last node.
+
+        Complexity is `O(n)`.
+        """
         return typing.cast(ChildNode, super().end())
 
     def _accept_node(self, parent_board: chess.Board, visitor: BaseVisitor[ResultT]) -> None:
@@ -773,11 +838,6 @@ class Game(GameNode):
     def board(self) -> chess.Board:
         return self.headers.board()
 
-    # TODO: Consider naming.
-    def _interactive_viewer(self) -> Any:
-        from chess._interactive import InteractiveViewer
-        return InteractiveViewer(self)  # type: ignore
-
     def ply(self) -> int:
         # Optimization: Parse FEN only for custom starting positions.
         return self.board().ply() if "FEN" in self.headers else 0
@@ -796,11 +856,11 @@ class Game(GameNode):
             fen = setup.fen()
 
         if fen == type(setup).starting_fen:
-            self.headers.pop("SetUp", None)
             self.headers.pop("FEN", None)
+            self.headers.pop("SetUp", None)
         else:
-            self.headers["SetUp"] = "1"
             self.headers["FEN"] = fen
+            self.headers["SetUp"] = "1"
 
         if type(setup).aliases[0] == "Standard" and setup.chess960:
             self.headers["Variant"] = "Chess960"
@@ -833,6 +893,14 @@ class Game(GameNode):
         visitor.end_game()
         return visitor.result()
 
+    def time_control(self) -> TimeControl:
+        """
+        Returns the time control of the game. If the game has no time control
+        information, the default time control ('UNKNOWN') is returned.
+        """
+        time_control_header = self.headers.get("TimeControl", "")
+        return parse_time_control(time_control_header)
+
     @classmethod
     def from_board(cls: Type[GameT], board: chess.Board) -> GameT:
         """Creates a game from the move stack of a :class:`~chess.Board()`."""
@@ -858,12 +926,13 @@ class Game(GameNode):
         return GameBuilder(Game=cls)
 
     def __repr__(self) -> str:
-        return "<{} at {:#x} ({!r} vs. {!r}, {!r}{})>".format(
+        return "<{} at {:#x} ({!r} vs. {!r}, {!r} at {!r}{})>".format(
             type(self).__name__,
             id(self),
             self.headers.get("White", "?"),
             self.headers.get("Black", "?"),
             self.headers.get("Date", "????.??.??"),
+            self.headers.get("Site", "?"),
             f", {len(self.errors)} errors" if self.errors else "")
 
 
@@ -920,17 +989,14 @@ class Headers(MutableMapping[str, str]):
         if key in TAG_ROSTER:
             self._tag_roster[key] = value
         elif not TAG_NAME_REGEX.match(key):
-            raise ValueError(f"non-alphanumeric pgn header tag: {key!r}")
+            raise ValueError(f"invalid pgn header tag: {key!r}")
         elif "\n" in value or "\r" in value:
             raise ValueError(f"line break in pgn header {key}: {value!r}")
         else:
             self._others[key] = value
 
     def __getitem__(self, key: str) -> str:
-        if key in TAG_ROSTER:
-            return self._tag_roster[key]
-        else:
-            return self._others[key]
+        return self._tag_roster[key] if key in TAG_ROSTER else self._others[key]
 
     def __delitem__(self, key: str) -> None:
         if key in TAG_ROSTER:
@@ -943,7 +1009,7 @@ class Headers(MutableMapping[str, str]):
             if key in self._tag_roster:
                 yield key
 
-        yield from sorted(self._others)
+        yield from self._others
 
     def __len__(self) -> int:
         return len(self._tag_roster) + len(self._others)
@@ -1026,6 +1092,13 @@ class BaseVisitor(abc.ABC, Generic[ResultT]):
 
     def end_headers(self) -> Optional[SkipType]:
         """Called after visiting game headers."""
+        pass
+
+    def begin_parse_san(self, board: chess.Board, san: str) -> Optional[SkipType]:
+        """
+        When the visitor is used by a parser, this is called at the start of
+        each standard algebraic notation detailing a move.
+        """
         pass
 
     def parse_san(self, board: chess.Board, san: str) -> chess.Move:
@@ -1146,11 +1219,11 @@ class GameBuilder(BaseVisitor[GameT]):
             # a variation. Add as a comment for the game if the comment
             # starts before any move.
             new_comment = [self.variation_stack[-1].comment, comment]
-            self.variation_stack[-1].comment = "\n".join(new_comment).strip()
+            self.variation_stack[-1].comment = " ".join(filter(None, new_comment))
         else:
             # Otherwise, it is a starting comment.
             new_comment = [self.starting_comment, comment]
-            self.starting_comment = "\n".join(new_comment).strip()
+            self.starting_comment = " ".join(filter(None, new_comment))
 
     def visit_move(self, board: chess.Board, move: chess.Move) -> None:
         self.variation_stack[-1] = self.variation_stack[-1].add_variation(move)
@@ -1188,7 +1261,7 @@ class GameBuilder(BaseVisitor[GameT]):
         >>>
         >>> game = chess.pgn.read_game(pgn, Visitor=MyGameBuilder)
         """
-        LOGGER.exception("error during pgn parsing")
+        LOGGER.error("%s while parsing %r", error, self.game)
         self.game.errors.append(error)
 
     def result(self) -> GameT:
@@ -1246,7 +1319,7 @@ class BoardBuilder(BaseVisitor[chess.Board]):
         return self.board
 
 
-class SkipVisitor(BaseVisitor[_TrueLiteral]):
+class SkipVisitor(BaseVisitor[Literal[True]]):
     """Skips a game."""
 
     def begin_game(self) -> SkipType:
@@ -1258,7 +1331,7 @@ class SkipVisitor(BaseVisitor[_TrueLiteral]):
     def begin_variation(self) -> SkipType:
         return SKIP
 
-    def result(self) -> _TrueLiteral:
+    def result(self) -> Literal[True]:
         return True
 
 
@@ -1452,7 +1525,8 @@ def read_game(handle: TextIO, *, Visitor: Any = GameBuilder) -> Any:
     By using text mode, the parser does not need to handle encodings. It is the
     caller's responsibility to open the file with the correct encoding.
     PGN files are usually ASCII or UTF-8 encoded, sometimes with BOM (which
-    this parser automatically ignores).
+    this parser automatically ignores). See :func:`open` for options to
+    deal with encoding errors.
 
     >>> pgn = open("data/pgn/kasparov-deep-blue-1997.pgn", encoding="utf-8")
 
@@ -1524,7 +1598,9 @@ def read_game(handle: TextIO, *, Visitor: Any = GameBuilder) -> Any:
                 if unmanaged_headers is not None:
                     unmanaged_headers[tag_match.group(1)] = tag_match.group(2)
             else:
-                break
+                # Ignore invalid or malformed headers.
+                line = handle.readline()
+                continue
 
         line = handle.readline()
 
@@ -1584,42 +1660,43 @@ def read_game(handle: TextIO, *, Visitor: Any = GameBuilder) -> Any:
 
     # Parse movetext.
     skip_variation_depth = 0
+    fresh_line = True
     while line:
-        read_next_line = True
-
-        # Ignore comments.
-        if line.startswith("%") or line.startswith(";"):
-            line = handle.readline()
-            continue
-
-        # An empty line means the end of a game.
-        if line.isspace():
-            visitor.end_game()
-            return visitor.result()
+        if fresh_line:
+            # Ignore comments.
+            if line.startswith("%") or line.startswith(";"):
+                line = handle.readline()
+                continue
+            # An empty line means the end of a game.
+            if line.isspace():
+                visitor.end_game()
+                return visitor.result()
+        fresh_line = True
 
         for match in MOVETEXT_REGEX.finditer(line):
             token = match.group(0)
 
             if token.startswith("{"):
                 # Consume until the end of the comment.
-                line = token[1:]
+                start_index = 2 if token.startswith("{ ") else 1
+                line = token[start_index:]
+
                 comment_lines = []
                 while line and "}" not in line:
-                    comment_lines.append(line.rstrip())
+                    comment_lines.append(line)
                     line = handle.readline()
-                end_index = line.find("}")
-                comment_lines.append(line[:end_index])
-                if "}" in line:
-                    line = line[end_index:]
-                else:
-                    line = ""
+
+                if line:
+                    close_index = line.find("}")
+                    end_index = close_index - 1 if close_index > 0 and line[close_index - 1] == " " else close_index
+                    comment_lines.append(line[:end_index])
+                    line = line[close_index + 1:]
 
                 if not skip_variation_depth:
-                    visitor.visit_comment("\n".join(comment_lines).strip())
+                    visitor.visit_comment("".join(comment_lines))
 
-                # Continue with the current or the next line.
-                if line:
-                    read_next_line = False
+                # Continue with the current line.
+                fresh_line = False
                 break
             elif token == "(":
                 if skip_variation_depth:
@@ -1663,17 +1740,18 @@ def read_game(handle: TextIO, *, Visitor: Any = GameBuilder) -> Any:
                 visitor.visit_result(token)
             else:
                 # Parse SAN tokens.
-                try:
-                    move = visitor.parse_san(board_stack[-1], token)
-                except ValueError as error:
-                    visitor.handle_error(error)
-                    skip_variation_depth = 1
-                else:
-                    visitor.visit_move(board_stack[-1], move)
-                    board_stack[-1].push(move)
+                if visitor.begin_parse_san(board_stack[-1], token) is not SKIP:
+                    try:
+                        move = visitor.parse_san(board_stack[-1], token)
+                    except ValueError as error:
+                        visitor.handle_error(error)
+                        skip_variation_depth = 1
+                    else:
+                        visitor.visit_move(board_stack[-1], move)
+                        board_stack[-1].push(move)
                 visitor.visit_board(board_stack[-1])
 
-        if read_next_line:
+        if fresh_line:
             line = handle.readline()
 
     visitor.end_game()
@@ -1727,3 +1805,61 @@ def skip_game(handle: TextIO) -> bool:
     Skips a game. Returns ``True`` if a game was found and skipped.
     """
     return bool(read_game(handle, Visitor=SkipVisitor))
+
+
+def parse_time_control(time_control: str) -> TimeControl:
+    tc = TimeControl()
+
+    if not time_control:
+        return tc
+
+    if time_control.startswith("?"):
+        return tc
+
+    if time_control.startswith("-"):
+        tc.type = TimeControlType.UNLIMITED
+        return tc
+
+    def _parse_part(part: str) -> TimeControlPart:
+        tcp = TimeControlPart()
+
+        moves_time, *bonus = part.split("+")
+
+        if bonus:
+            _bonus = bonus[0]
+            if _bonus.lower().endswith("d"):
+                tcp.delay = float(_bonus[:-1])
+            else:
+                tcp.increment = float(_bonus)
+
+        moves, *time = moves_time.split("/")
+        if time:
+            tcp.moves = int(moves)
+            tcp.time = int(time[0])
+        else:
+            tcp.moves = 0
+            tcp.time = int(moves)
+
+        return tcp
+
+    tc.parts = [_parse_part(part) for part in time_control.split(":")]
+
+    if len(tc.parts) > 1:
+        for part in tc.parts[:-1]:
+            if part.moves == 0:
+                raise ValueError("Only last part can be 'sudden death'.")
+
+    # Classification according to https://www.fide.com/FIDE/handbook/LawsOfChess.pdf
+    # (Bullet added)
+    base_time = tc.parts[0].time
+    increment = tc.parts[0].increment
+    if (base_time + 60 * increment) < 3 * 60:
+        tc.type = TimeControlType.BULLET
+    elif (base_time + 60 * increment) < 15 * 60:
+        tc.type = TimeControlType.BLITZ
+    elif (base_time + 60 * increment) < 60 * 60:
+        tc.type = TimeControlType.RAPID
+    else:
+        tc.type = TimeControlType.STANDARD
+
+    return tc

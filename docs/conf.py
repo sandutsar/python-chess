@@ -1,6 +1,10 @@
 import sys
 import os
 
+# Import the chess module.
+sys.path.insert(0, os.path.abspath(".."))
+import chess
+
 # Do not resolve these.
 autodoc_type_aliases = {
     "Square": "chess.Square",
@@ -10,13 +14,17 @@ autodoc_type_aliases = {
     "IntoSquareSet": "chess.IntoSquareSet",
 }
 
-# Import the chess module.
-sys.path.insert(0, os.path.abspath(".."))
-import chess
-
 # Autodoc.
-extensions = ["sphinx.ext.autodoc", "sphinx.ext.viewcode"]
+extensions = [
+    "sphinx.ext.autodoc",
+    "sphinx.ext.viewcode",
+    "sphinx.ext.intersphinx",
+    "sphinxcontrib.jquery"
+]
 autodoc_member_order = "bysource"
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+}
 
 # The suffix of source filenames.
 source_suffix = ".rst"
@@ -26,7 +34,7 @@ master_doc = "index"
 
 # General information about the project.
 project = "python-chess"
-copyright = "2014–2021, Niklas Fiekas"
+copyright = "2014–2024, Niklas Fiekas"
 
 # The version.
 version = chess.__version__
@@ -41,4 +49,4 @@ pygments_style = "sphinx"
 
 # The theme to use for HTML and HTML Help pages. See the documentation for
 # a list of built-in themes.
-html_theme = "default"
+html_theme = "sphinx_rtd_theme"

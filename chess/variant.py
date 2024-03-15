@@ -1,23 +1,6 @@
-# This file is part of the python-chess library.
-# Copyright (C) 2016-2021 Niklas Fiekas <niklas.fiekas@backscattering.de>
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
-
 from __future__ import annotations
 
 import chess
-import copy
 import itertools
 
 from typing import Dict, Generic, Hashable, Iterable, Iterator, List, Optional, Type, TypeVar, Union
@@ -85,16 +68,25 @@ class SuicideBoard(chess.Board):
             return self.is_stalemate() and self._material_balance() == 0
 
     def has_insufficient_material(self, color: chess.Color) -> bool:
-        if self.occupied != self.bishops:
+        if not self.occupied_co[color]:
             return False
-
-        # In a position with only bishops, check if all our bishops can be
-        # captured.
-        we_some_on_light = bool(self.occupied_co[color] & chess.BB_LIGHT_SQUARES)
-        we_some_on_dark = bool(self.occupied_co[color] & chess.BB_DARK_SQUARES)
-        they_all_on_dark = not (self.occupied_co[not color] & chess.BB_LIGHT_SQUARES)
-        they_all_on_light = not (self.occupied_co[not color] & chess.BB_DARK_SQUARES)
-        return (we_some_on_light and they_all_on_dark) or (we_some_on_dark and they_all_on_light)
+        elif not self.occupied_co[not color]:
+            return True
+        elif self.occupied == self.bishops:
+            # In a position with only bishops, check if all our bishops can be
+            # captured.
+            we_some_on_light = bool(self.occupied_co[color] & chess.BB_LIGHT_SQUARES)
+            we_some_on_dark = bool(self.occupied_co[color] & chess.BB_DARK_SQUARES)
+            they_all_on_dark = not (self.occupied_co[not color] & chess.BB_LIGHT_SQUARES)
+            they_all_on_light = not (self.occupied_co[not color] & chess.BB_DARK_SQUARES)
+            return (we_some_on_light and they_all_on_dark) or (we_some_on_dark and they_all_on_light)
+        elif self.occupied == self.knights and chess.popcount(self.knights) == 2:
+            return (
+                self.turn == color ^
+                bool(self.occupied_co[chess.WHITE] & chess.BB_LIGHT_SQUARES) ^
+                bool(self.occupied_co[chess.BLACK] & chess.BB_DARK_SQUARES))
+        else:
+            return False
 
     def generate_pseudo_legal_moves(self, from_mask: chess.Bitboard = chess.BB_ALL, to_mask: chess.Bitboard = chess.BB_ALL) -> Iterator[chess.Move]:
         for move in super().generate_pseudo_legal_moves(from_mask, to_mask):
@@ -201,7 +193,6 @@ class AtomicBoard(chess.Board):
     tbw_magic = b"\x55\x8d\xa4\x49"
     tbz_magic = b"\x91\xa9\x5e\xeb"
     connected_kings = True
-    one_king = True
 
     def is_variant_end(self) -> bool:
         return not all(self.kings & side for side in self.occupied_co)
@@ -320,7 +311,8 @@ class AtomicBoard(chess.Board):
             status &= ~chess.STATUS_NO_BLACK_KING
         if chess.popcount(self.checkers_mask()) <= 14:
             status &= ~chess.STATUS_TOO_MANY_CHECKERS
-        status &= ~chess.STATUS_IMPOSSIBLE_CHECK
+        if self._valid_ep_square() is None:
+            status &= ~chess.STATUS_IMPOSSIBLE_CHECK
         return status
 
 
@@ -409,7 +401,7 @@ class RacingKingsBoard(chess.Board):
     def status(self) -> chess.Status:
         status = super().status()
         if self.is_check():
-            status |= chess.STATUS_RACE_CHECK | chess.STATUS_TOO_MANY_CHECKERS
+            status |= chess.STATUS_RACE_CHECK | chess.STATUS_TOO_MANY_CHECKERS | chess.STATUS_IMPOSSIBLE_CHECK
         if self.turn == chess.BLACK and all(self.occupied_co[co] & self.kings & chess.BB_RANK_8 for co in chess.COLORS):
             status |= chess.STATUS_RACE_OVER
         if self.pawns:
@@ -770,7 +762,7 @@ class ThreeCheckBoard(chess.Board):
         self.remaining_checks[chess.WHITE] = wc
         self.remaining_checks[chess.BLACK] = bc
 
-    def epd(self, shredder: bool = False, en_passant: chess._EnPassantSpec = "legal", promoted: Optional[bool] = None, **operations: Union[None, str, int, float, chess.Move, Iterable[chess.Move]]) -> str:
+    def epd(self, shredder: bool = False, en_passant: chess.EnPassantSpec = "legal", promoted: Optional[bool] = None, **operations: Union[None, str, int, float, chess.Move, Iterable[chess.Move]]) -> str:
         epd = [super().epd(shredder=shredder, en_passant=en_passant, promoted=promoted),
                "{:d}+{:d}".format(max(self.remaining_checks[chess.WHITE], 0),
                                   max(self.remaining_checks[chess.BLACK], 0))]
@@ -828,31 +820,32 @@ class CrazyhousePocket:
     """A Crazyhouse pocket with a counter for each piece type."""
 
     def __init__(self, symbols: Iterable[str] = "") -> None:
-        self.pieces: Dict[chess.PieceType, int] = {}
+        self.reset()
         for symbol in symbols:
             self.add(chess.PIECE_SYMBOLS.index(symbol))
 
+    def reset(self) -> None:
+        """Clears the pocket."""
+        self._pieces = [-1, 0, 0, 0, 0, 0, 0]
+
     def add(self, piece_type: chess.PieceType) -> None:
         """Adds a piece of the given type to this pocket."""
-        self.pieces[piece_type] = self.pieces.get(piece_type, 0) + 1
+        self._pieces[piece_type] += 1
 
     def remove(self, piece_type: chess.PieceType) -> None:
         """Removes a piece of the given type from this pocket."""
-        self.pieces[piece_type] -= 1
+        assert self._pieces[piece_type], f"cannot remove {chess.piece_symbol(piece_type)} from {self!r}"
+        self._pieces[piece_type] -= 1
 
     def count(self, piece_type: chess.PieceType) -> int:
         """Returns the number of pieces of the given type in the pocket."""
-        return self.pieces.get(piece_type, 0)
-
-    def reset(self) -> None:
-        """Clears the pocket."""
-        self.pieces.clear()
+        return self._pieces[piece_type]
 
     def __str__(self) -> str:
         return "".join(chess.piece_symbol(pt) * self.count(pt) for pt in reversed(chess.PIECE_TYPES))
 
     def __len__(self) -> int:
-        return sum(self.pieces.values())
+        return sum(self._pieces[1:])
 
     def __repr__(self) -> str:
         return f"CrazyhousePocket('{self}')"
@@ -860,7 +853,7 @@ class CrazyhousePocket:
     def copy(self: CrazyhousePocketT) -> CrazyhousePocketT:
         """Returns a copy of this pocket."""
         pocket = type(self)()
-        pocket.pieces = copy.copy(self.pieces)
+        pocket._pieces = self._pieces[:]
         return pocket
 
 class CrazyhouseBoard(chess.Board):
@@ -958,9 +951,9 @@ class CrazyhouseBoard(chess.Board):
             return super().is_legal(move)
 
     def generate_pseudo_legal_drops(self, to_mask: chess.Bitboard = chess.BB_ALL) -> Iterator[chess.Move]:
-        for to_square in chess.scan_forward(to_mask & ~self.occupied):
-            for pt, count in self.pockets[self.turn].pieces.items():
-                if count and (pt != chess.PAWN or not chess.BB_BACKRANKS & chess.BB_SQUARES[to_square]):
+        for pt in chess.PIECE_TYPES:
+            if self.pockets[self.turn].count(pt):
+                for to_square in chess.scan_forward(to_mask & ~self.occupied & (~chess.BB_BACKRANKS if pt == chess.PAWN else chess.BB_ALL)):
                     yield chess.Move(to_square, to_square, drop=pt)
 
     def generate_legal_drops(self, to_mask: chess.Bitboard = chess.BB_ALL) -> Iterator[chess.Move]:
@@ -978,7 +971,7 @@ class CrazyhouseBoard(chess.Board):
                 uci = "P" + uci
             move = chess.Move.from_uci(uci)
             if not self.is_legal(move):
-                raise ValueError(f"illegal drop san: {san!r} in {self.fen()}")
+                raise chess.IllegalMoveError(f"illegal drop san: {san!r} in {self.fen()}")
             return move
         else:
             return super().parse_san(san)
@@ -1026,7 +1019,7 @@ class CrazyhouseBoard(chess.Board):
             promoted = True
         return super().board_fen(promoted=promoted)
 
-    def epd(self, shredder: bool = False, en_passant: chess._EnPassantSpec = "legal", promoted: Optional[bool] = None, **operations: Union[None, str, int, float, chess.Move, Iterable[chess.Move]]) -> str:
+    def epd(self, shredder: bool = False, en_passant: chess.EnPassantSpec = "legal", promoted: Optional[bool] = None, **operations: Union[None, str, int, float, chess.Move, Iterable[chess.Move]]) -> str:
         epd = super().epd(shredder=shredder, en_passant=en_passant, promoted=promoted)
         board_part, info_part = epd.split(" ", 1)
         return f"{board_part}[{str(self.pockets[chess.WHITE]).upper()}{self.pockets[chess.BLACK]}] {info_part}"

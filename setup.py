@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-#
-# This file is part of the python-chess library.
-# Copyright (C) 2012-2021 Niklas Fiekas <niklas.fiekas@backscattering.de>
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 import os
 import platform
@@ -34,8 +18,13 @@ if sys.version_info < (3, ):
         end of 2018. Consider upgrading to Python 3.
         """))
 
-if sys.version_info < (3, 7):
-    raise ImportError("Since version 1.0.0, python-chess requires Python 3.7 or later.")
+if sys.version_info < (3, 8):
+    raise ImportError(textwrap.dedent("""\
+        You are trying to install python-chess.
+
+        Since version 1.11.0, python-chess requires Python 3.8 or later.
+        Since version 1.0.0, python-chess requires Python 3.7 or later.
+        """))
 
 import chess
 
@@ -81,7 +70,7 @@ setuptools.setup(
     package_data={
         "chess": ["py.typed"],
     },
-    python_requires=">=3.7",
+    python_requires=">=3.8",
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
@@ -89,10 +78,11 @@ setuptools.setup(
         "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3 :: Only",
-        "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
         "Topic :: Games/Entertainment :: Board Games",
         "Topic :: Games/Entertainment :: Turn Based Strategy",
         "Topic :: Software Development :: Libraries :: Python Modules",

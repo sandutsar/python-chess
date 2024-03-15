@@ -1,19 +1,3 @@
-# This file is part of the python-chess library.
-# Copyright (C) 2012-2021 Niklas Fiekas <niklas.fiekas@backscattering.de>
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
-
 from __future__ import annotations
 
 import collections
@@ -28,7 +12,7 @@ import typing
 import chess
 
 from types import TracebackType
-from typing import Deque, Dict, Iterable, Iterator, List, Optional, Tuple, Type, TypeVar, Union
+from typing import Deque, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Type, TypeVar, Union
 
 
 UINT64_BE = struct.Struct(">Q")
@@ -384,7 +368,7 @@ def is_tablename(name: str, *, one_king: bool = True, piece_count: Optional[int]
 def tablenames(*, one_king: bool = True, piece_count: int = 6) -> Iterator[str]:
     first = "K" if one_king else "P"
 
-    targets = []
+    targets: List[str] = []
 
     white_pieces = piece_count - 2
     black_pieces = 0
@@ -427,7 +411,7 @@ def _dependencies(target: str, *, one_king: bool = True) -> Iterator[str]:
 
 
 def dependencies(target: str, *, one_king: bool = True) -> Iterator[str]:
-    closed = set()
+    closed: Set[str] = set()
     if one_king:
         closed.add("KvK")
 
@@ -438,7 +422,7 @@ def dependencies(target: str, *, one_king: bool = True) -> Iterator[str]:
 
 
 def all_dependencies(targets: Iterable[str], *, one_king: bool = True) -> Iterator[str]:
-    closed = set()
+    closed: Set[str] = set()
     if one_king:
         closed.add("KvK")
 
@@ -559,7 +543,6 @@ class Table:
 
         self.write_lock = threading.RLock()
         self.initialized = False
-        self.fd: Optional[int] = None
         self.data: Optional[mmap.mmap] = None
 
         self.read_condition = threading.Condition()
@@ -577,8 +560,7 @@ class Table:
 
         black_part, white_part = tablename.split("v")
         if self.has_pawns:
-            self.pawns = {0: white_part.count("P"),
-                          1: black_part.count("P")}
+            self.pawns = [white_part.count("P"), black_part.count("P")]
             if self.pawns[1] > 0 and (self.pawns[0] == 0 or self.pawns[1] < self.pawns[0]):
                 self.pawns[0], self.pawns[1] = self.pawns[1], self.pawns[0]
         else:
@@ -603,23 +585,23 @@ class Table:
                         self.enc_type = 1 + j
 
     def init_mmap(self) -> None:
-        with self.write_lock:
-            # Open fd.
-            if self.fd is None:
-                self.fd = os.open(self.path, os.O_RDONLY | os.O_BINARY if hasattr(os, "O_BINARY") else os.O_RDONLY)
+        if self.data is None:
+            fd = os.open(self.path, os.O_RDONLY | os.O_BINARY if hasattr(os, "O_BINARY") else os.O_RDONLY)
+            try:
+                data = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
+            finally:
+                os.close(fd)
 
-            # Open mmap.
-            if self.data is None:
-                data = mmap.mmap(self.fd, 0, access=mmap.ACCESS_READ)
-                if data.size() % 64 != 16:
-                    raise IOError(f"invalid file size: ensure {self.path!r} is a valid syzygy tablebase file")
-                self.data = data
+            if data.size() % 64 != 16:
+                raise IOError(f"invalid file size: ensure {self.path!r} is a valid syzygy tablebase file")
 
-                try:
-                    # Python 3.8
-                    self.data.madvise(mmap.MADV_RANDOM)
-                except AttributeError:
-                    pass
+            try:
+                # Unix
+                data.madvise(mmap.MADV_RANDOM)
+            except AttributeError:
+                pass
+
+            self.data = data
 
     def check_magic(self, magic: Optional[bytes], pawnless_magic: Optional[bytes]) -> None:
         assert self.data
@@ -702,10 +684,7 @@ class Table:
             i += norm[i]
 
     def calc_factors_piece(self, factor: List[int], order: int, norm: List[int]) -> int:
-        if not self.variant.connected_kings:
-            PIVFAC = [31332, 28056, 462]
-        else:
-            PIVFAC = [31332, 0, 518, 278]
+        PIVFAC = [31332, 0, 518, 278] if self.variant.connected_kings else [31332, 28056, 462]
 
         n = 64 - norm[0]
 
@@ -1046,10 +1025,6 @@ class Table:
                     self.data.close()
                     self.data = None
 
-                if self.fd is not None:
-                    os.close(self.fd)
-                    self.fd = None
-
     def __enter__(self: TableT) -> TableT:
         return self
 
@@ -1077,12 +1052,8 @@ class WdlTable(Table):
             # Used if there are only pieces.
             self.precomp: Dict[int, PairsData] = {}
             self.pieces: Dict[int, List[int]] = {}
-
-            self.factor = {0: [0 for _ in range(TBPIECES)],
-                           1: [0 for _ in range(TBPIECES)]}
-
-            self.norm = {0: [0 for _ in range(self.num)],
-                         1: [0 for _ in range(self.num)]}
+            self.factor = [[0 for _ in range(TBPIECES)] for _ in range(2)]
+            self.norm = [[0 for _ in range(self.num)] for _ in range(2)]
 
             # Used if there are pawns.
             self.files = [PawnFileData() for _ in range(4)]
@@ -1283,14 +1254,14 @@ class DtzTable(Table):
             self.norm = [0 for _ in range(self.num)]
             self.tb_size = [0, 0, 0, 0]
             self.size = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-            self.files = [PawnFileDataDtz() for f in range(4)]
+            self.files = [PawnFileDataDtz() for _ in range(4)]
 
             files = 4 if self.data[4] & 0x02 else 1
 
             p_data = 5
 
             if not self.has_pawns:
-                self.map_idx = [[0, 0, 0, 0]]
+                self.map_idx: List[List[int]] = [[0, 0, 0, 0]]
 
                 self.setup_pieces_piece_dtz(p_data, 0)
                 p_data += self.num + 1
@@ -1492,10 +1463,6 @@ class DtzTable(Table):
 class Tablebase:
     """
     Manages a collection of tablebase files for probing.
-
-    If *max_fds* is not ``None``, will at most use *max_fds* open file
-    descriptors at any given time. The least recently used tables are closed,
-    if nescessary.
     """
     def __init__(self, *, max_fds: Optional[int] = 128, VariantBoard: Type[chess.Board] = chess.Board) -> None:
         self.variant = VariantBoard
@@ -1590,6 +1557,15 @@ class Tablebase:
         return table.probe_wdl_table(board)
 
     def probe_ab(self, board: chess.Board, alpha: int, beta: int, threats: bool = False) -> Tuple[int, int]:
+        # Check preconditions.
+        if board.uci_variant != self.variant.uci_variant:
+            raise KeyError(f"tablebase has been opened for {self.variant.uci_variant}, probed with: {board.uci_variant}")
+        if board.castling_rights:
+            raise KeyError(f"syzygy tables do not contain positions with castling rights: {board.fen()}")
+        if chess.popcount(board.occupied) > TBPIECES:
+            raise KeyError(f"syzygy tables support up to {TBPIECES} pieces, not {chess.popcount(board.occupied)}: {board.fen()}")
+
+        # Special case: Variant with compulsory captures.
         if self.variant.captures_compulsory:
             if board.is_variant_win():
                 return 2, 2
@@ -1706,14 +1682,6 @@ class Tablebase:
 
             Note that probing corrupted table files is undefined behavior.
         """
-        # Positions with castling rights are not in the tablebase.
-        if board.castling_rights:
-            raise KeyError(f"syzygy tables do not contain positions with castling rights: {board.fen()}")
-
-        # Validate piece count.
-        if chess.popcount(board.occupied) > TBPIECES:
-            raise KeyError(f"syzygy tables support up to {TBPIECES} pieces, not {chess.popcount(board.occupied)}: {board.fen()}")
-
         # Probe.
         v, _ = self.probe_ab(board, -2, 2)
 
@@ -1990,6 +1958,10 @@ def open_tablebase(directory: str, *, load_wdl: bool = True, load_dtz: bool = Tr
         are often distributed separately, but are both required for 6-piece
         positions. Use :func:`~chess.syzygy.Tablebase.add_directory()` to load
         tables from additional directories.
+
+    :param max_fds: If *max_fds* is not ``None``, will at most use *max_fds*
+        open file descriptors at any given time. The least recently used tables
+        are closed, if necessary.
     """
     tables = Tablebase(max_fds=max_fds, VariantBoard=VariantBoard)
     tables.add_directory(directory, load_wdl=load_wdl, load_dtz=load_dtz)

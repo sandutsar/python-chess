@@ -1,30 +1,160 @@
 Changelog for python-chess
 ==========================
 
-New in v1.7.0
--------------
+Upcoming in the next release
+----------------------------
+
+Changes:
+
+* Dropped support for Python 3.7, which had reached its end of life.
+* `chess.engine.EventLoopPolicy` is no longer needed and now merely an alias
+  for the default event loop policy.
+
+New in v1.10.0 (27th Jul 2023)
+------------------------------
 
 New features:
 
-* Added new models for ``chess.engine.Score.wdl()``: ``sf`` (the new default)
+* Use ``chess.engine.Opponent`` to send opponent information to engines.
+* Inform engines about the game result using
+  ``chess.engine.Protocol.send_game_result()``.
+* Add ``chess.engine.Limit.clock_id``.
+* Add ``chess.svg.board(..., borders=True)``.
+* Avoid rendering background behind SVG boards to better support transparency.
+* Add ``chess.pgn.BaseVisitor.begin_parse_san()``.
+* Introduce new distance metrics ``chess.square_manhattan_distance()`` and
+  ``chess.square_knight_distance()``.
+
+Bugfixes:
+
+* Fix ``chess.pgn.GameNode.eval()`` sometimes off by one centipawn.
+* Fix handling of additional spaces between UCI option tokens.
+* Handle implicit XBoard engine resignation via output like
+  ``0-1 {White resigns}``.
+
+Changes:
+
+* Add model ``sf16`` for ``chess.engine.Score.wdl()``, the new default.
+* Update ``lichess`` WDL model.
+* Keep PGN headers that do not belong to the Seven Tag Roster in insertion
+  order.
+* Halve the number of open file descriptors maintained by tablebases
+  and opening books.
+* Reduce verbosity of logged ``chess.pgn`` errors.
+
+New in v1.9.4 (22nd Dec 2022)
+-----------------------------
+
+Bugfixes:
+
+* Fix ``PovScore.wdl()`` ignored ``model`` and ``ply`` parameters.
+* ``chess.syzygy``: Check that board matches tablebase variant.
+
+New features:
+
+* Add model ``sf15.1`` for ``chess.engine.Score.wdl()``.
+* Raise more specific exceptions: ``chess.IllegalMoveError``,
+  ``chess.AmbiguousMoveError``, and ``chess.InvalidMoveError``.
+
+New in v1.9.3 (16th Sep 2022)
+-----------------------------
+
+Bugfixes:
+
+* Fix some valid characters were not accepted in PGN tag names.
+
+Changes:
+
+* Skip over syntactically invalid PGN tags.
+* Detect Antichess insufficient material with two opposing knights.
+
+New features:
+
+* Add ``chess.Board.unicode(..., orientation=chess.WHITE)``.
+
+New in v1.9.2 (17th Jun 2022)
+-----------------------------
+
+Bugfixes:
+
+* Fix recursive Crazyhouse move generation sometimes failing with
+  with ``RuntimeError``.
+* Fix rendering of black pawn SVG on dark background.
+
+New features:
+
+* Add ``chess.engine.AnalysisResult.would_block()``.
+
+New in v1.9.1 (28th May 2022)
+-----------------------------
+
+Bugfixes:
+
+* Reject pawn capture SAN if the original file is not specified, e.g.,
+  ``d5`` will no longer match ``cxd5``.
+
+Changes:
+
+* Tweak handling of whitespace in PGN comments: When parsing, any leading
+  and trailing whitespace (beyond one space) is preserved. When joining
+  multiple PGN comments, they are now separated with a space instead of a
+  newline character. When removing annotations from comments, leftover
+  whitespace is avoided.
+
+New features:
+
+* Add model ``sf15`` for ``chess.engine.Score.wdl()``.
+
+New in v1.9.0 (18th Mar 2022)
+-----------------------------
+
+Bugfixes:
+
+* Expand position validation to detect check conflicting with en passant
+  square.
+
+New features:
+
+* Add ``chess.svg.board(..., fill=...)``.
+* Let ``chess.svg.board()`` add ASCII board as description of SVG.
+* Add hint when engine process dies due to illegal instruction.
+
+New in v1.8.0 (23rd Dec 2021)
+-----------------------------
+
+Bugfixes:
+
+* Fix ``SquareSet.issuperset()`` and ``SquareSet.issubset()`` by swapping
+  their respective implementations.
+
+New features:
+
+* Read and write PGN comments like ``[%emt 0:05:21]``.
+
+New in v1.7.0 (7th Oct 2021)
+----------------------------
+
+New features:
+
+* Add new models for ``chess.engine.Score.wdl()``: ``sf`` (the new default)
   and ``sf14``.
-* Added ``chess.Board.piece_map()``.
+* Add ``chess.Board.piece_map()``.
 
 Bugfixes:
 
 * ``chess.pgn``: Fix skipping with nested variations.
 * ``chess.svg``: Make check gradient compatible with QtSvg.
 
-New in v1.6.1
--------------
+New in v1.6.1 (12th Jun 2021)
+-----------------------------
 
 Bugfixes:
 
 * Make ``chess.engine.SimpleEngine.play(..., draw_offered=True)`` available.
   Previously only added for ``chess.engine.Protocol``.
 
-New in v1.6.0
--------------
+New in v1.6.0 (11th Jun 2021)
+-----------------------------
 
 New features:
 
@@ -46,8 +176,8 @@ Bugfixes:
 * Fix slightly off-center pawns in ``chess.svg``.
 * Fix typing error in Python 3.10 (due to added ``int.bit_count``).
 
-New in v1.5.0
--------------
+New in v1.5.0 (7th Apr 2021)
+----------------------------
 
 Bugfixes:
 
@@ -73,8 +203,8 @@ New features:
 Special thanks to @MarkZH for many of the engine related changes in this
 release!
 
-New in v1.4.0
--------------
+New in v1.4.0 (25th Jan 2021)
+-----------------------------
 
 New features:
 
@@ -90,8 +220,8 @@ Changes:
 * Recover from invalid UTF-8 sent by an UCI engine, by ignoring that
   (and only that) line.
 
-New in v1.3.3
--------------
+New in v1.3.3 (27th Dec 2020)
+-----------------------------
 
 Bugfixes:
 
@@ -109,8 +239,8 @@ New features:
 * Implemented Lichess winning chance model for ``chess.engine.Score``:
   ``score.wdl(model="lichess")``.
 
-New in v1.3.2
--------------
+New in v1.3.2 (12th Dec 2020)
+-----------------------------
 
 Bugfixes:
 
@@ -120,8 +250,8 @@ Bugfixes:
   on the same rank, file, or diagonal. Such positions are impossible to reach,
   break Stockfish, and maybe other engines.
 
-New in v1.3.1
--------------
+New in v1.3.1 (6th Dec 2020)
+----------------------------
 
 Bugfixes:
 
@@ -129,8 +259,8 @@ Bugfixes:
   castling rights (as well as mislabeled Standard Chess960 games). Previously,
   all castling moves in such games were rejected.
 
-New in v1.3.0
--------------
+New in v1.3.0 (6th Nov 2020)
+----------------------------
 
 Changes:
 
@@ -153,16 +283,16 @@ New features:
 
 * Added ``chess.pgn.GameNode.next()``.
 
-New in v1.2.2
--------------
+New in v1.2.2 (29th Oct 2020)
+-----------------------------
 
 Bugfixes:
 
 * Fixed regression where releases were uploaded without the ``py.typed``
   marker.
 
-New in v1.2.1
--------------
+New in v1.2.1 (26th Oct 2020)
+-----------------------------
 
 Changes:
 
@@ -179,8 +309,8 @@ Changes:
   previous versions? Run ``pip install --force-reinstall chess``
   (due to https://github.com/niklasf/python-chess/issues/680).
 
-New in v1.2.0
--------------
+New in v1.2.0 (22nd Oct 2020)
+-----------------------------
 
 New features:
 
@@ -207,8 +337,8 @@ Changes:
   ``chess.Board.epd()`` is now typed as ``Literal["legal", "fen", "xfen"]``
   rather than ``str``.
 
-New in v1.1.0
--------------
+New in v1.1.0 (4th Oct 2020)
+----------------------------
 
 New features:
 
@@ -222,15 +352,15 @@ Changes:
   like ``e2e4``, even if that is not a pawn move, castling notation with zeros,
   null moves in UCI notation, and null moves in XBoard notation.
 
-New in v1.0.1
--------------
+New in v1.0.1 (24th Sep 2020)
+-----------------------------
 
 Bugfixes:
 
 * ``chess.svg``: Restored SVG Tiny compatibility by splitting colors like
   ``#rrggbbaa`` into a solid color and opacity.
 
-New in v1.0.0
--------------
+New in v1.0.0 (24th Sep 2020)
+-----------------------------
 
 See ``CHANGELOG-OLD.rst`` for changes up to v1.0.0.

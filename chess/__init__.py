@@ -1,19 +1,3 @@
-# This file is part of the python-chess library.
-# Copyright (C) 2012-2021 Niklas Fiekas <niklas.fiekas@backscattering.de>
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
-
 """
 A chess library with move generation and validation,
 Polyglot opening book probing, PGN reading and writing,
@@ -27,7 +11,7 @@ __author__ = "Niklas Fiekas"
 
 __email__ = "niklas.fiekas@backscattering.de"
 
-__version__ = "1.7.0"
+__version__ = "1.10.0"
 
 import collections
 import copy
@@ -38,19 +22,15 @@ import re
 import itertools
 import typing
 
-from typing import ClassVar, Callable, Counter, Dict, Generic, Hashable, Iterable, Iterator, List, Mapping, Optional, SupportsInt, Tuple, Type, TypeVar, Union
+from typing import ClassVar, Callable, Counter, Dict, Generic, Hashable, Iterable, Iterator, List, Literal, Mapping, Optional, SupportsInt, Tuple, Type, TypeVar, Union
 
-try:
-    from typing import Literal
-    _EnPassantSpec = Literal["legal", "fen", "xfen"]
-except ImportError:
-    # Before Python 3.8.
-    _EnPassantSpec = str  # type: ignore
+EnPassantSpec = Literal["legal", "fen", "xfen"]
 
 
 Color = bool
 COLORS = [WHITE, BLACK] = [True, False]
-COLOR_NAMES = ["black", "white"]
+ColorName = Literal["white", "black"]
+COLOR_NAMES: List[ColorName] = ["black", "white"]
 
 PieceType = int
 PIECE_TYPES = [PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING] = range(1, 7)
@@ -165,6 +145,18 @@ class Outcome:
         return "1/2-1/2" if self.winner is None else ("1-0" if self.winner else "0-1")
 
 
+class InvalidMoveError(ValueError):
+    """Raised when move notation is not syntactically valid"""
+
+
+class IllegalMoveError(ValueError):
+    """Raised when the attempted move is illegal in the current position"""
+
+
+class AmbiguousMoveError(ValueError):
+    """Raised when the attempted move is ambiguous in the current position"""
+
+
 Square = int
 SQUARES = [
     A1, B1, C1, D1, E1, F1, G1, H1,
@@ -206,9 +198,33 @@ def square_rank(square: Square) -> int:
 
 def square_distance(a: Square, b: Square) -> int:
     """
-    Gets the distance (i.e., the number of king steps) from square *a* to *b*.
+    Gets the Chebyshev distance (i.e., the number of king steps) from square *a* to *b*.
     """
     return max(abs(square_file(a) - square_file(b)), abs(square_rank(a) - square_rank(b)))
+
+def square_manhattan_distance(a: Square, b: Square) -> int:
+    """
+    Gets the Manhattan/Taxicab distance (i.e., the number of orthogonal king steps) from square *a* to *b*.
+    """
+    return abs(square_file(a) - square_file(b)) + abs(square_rank(a) - square_rank(b))
+
+def square_knight_distance(a: Square, b: Square) -> int:
+    """
+    Gets the Knight distance (i.e., the number of knight moves) from square *a* to *b*.
+    """
+    dx = abs(square_file(a) - square_file(b))
+    dy = abs(square_rank(a) - square_rank(b))
+
+    if dx + dy == 1:
+        return 3
+    elif dx == dy == 2:
+        return 4
+    elif dx == dy == 1:
+        if BB_SQUARES[a] & BB_CORNERS or BB_SQUARES[b] & BB_CORNERS:  # Special case only for corner squares
+            return 4
+
+    m = math.ceil(max(dx / 2, dy / 2, (dx + dy) / 3))
+    return m + ((m + dx + dy) % 2)
 
 def square_mirror(square: Square) -> Square:
     """Mirrors the square vertically."""
@@ -396,8 +412,8 @@ def _carry_rippler(mask: Bitboard) -> Iterator[Bitboard]:
             break
 
 def _attack_table(deltas: List[int]) -> Tuple[List[Bitboard], List[Dict[Bitboard, Bitboard]]]:
-    mask_table = []
-    attack_table = []
+    mask_table: List[Bitboard] = []
+    attack_table: List[Dict[Bitboard, Bitboard]] = []
 
     for square in SQUARES:
         attacks = {}
@@ -417,9 +433,9 @@ BB_RANK_MASKS, BB_RANK_ATTACKS = _attack_table([-1, 1])
 
 
 def _rays() -> List[List[Bitboard]]:
-    rays = []
+    rays: List[List[Bitboard]] = []
     for a, bb_a in enumerate(BB_SQUARES):
-        rays_row = []
+        rays_row: List[Bitboard] = []
         for b, bb_b in enumerate(BB_SQUARES):
             if BB_DIAG_ATTACKS[a][0] & bb_b:
                 rays_row.append((BB_DIAG_ATTACKS[a][0] & BB_DIAG_ATTACKS[b][0]) | bb_a | bb_b)
@@ -551,23 +567,29 @@ class Move:
         """
         Parses a UCI string.
 
-        :raises: :exc:`ValueError` if the UCI string is invalid.
+        :raises: :exc:`InvalidMoveError` if the UCI string is invalid.
         """
         if uci == "0000":
             return cls.null()
         elif len(uci) == 4 and "@" == uci[1]:
-            drop = PIECE_SYMBOLS.index(uci[0].lower())
-            square = SQUARE_NAMES.index(uci[2:])
+            try:
+                drop = PIECE_SYMBOLS.index(uci[0].lower())
+                square = SQUARE_NAMES.index(uci[2:])
+            except ValueError:
+                raise InvalidMoveError(f"invalid uci: {uci!r}")
             return cls(square, square, drop=drop)
         elif 4 <= len(uci) <= 5:
-            from_square = SQUARE_NAMES.index(uci[0:2])
-            to_square = SQUARE_NAMES.index(uci[2:4])
-            promotion = PIECE_SYMBOLS.index(uci[4]) if len(uci) == 5 else None
+            try:
+                from_square = SQUARE_NAMES.index(uci[0:2])
+                to_square = SQUARE_NAMES.index(uci[2:4])
+                promotion = PIECE_SYMBOLS.index(uci[4]) if len(uci) == 5 else None
+            except ValueError:
+                raise InvalidMoveError(f"invalid uci: {uci!r}")
             if from_square == to_square:
-                raise ValueError(f"invalid uci (use 0000 for null moves): {uci!r}")
+                raise InvalidMoveError(f"invalid uci (use 0000 for null moves): {uci!r}")
             return cls(from_square, to_square, promotion=promotion)
         else:
-            raise ValueError(f"expected uci string to be of length 4 or 5: {uci!r}")
+            raise InvalidMoveError(f"expected uci string to be of length 4 or 5: {uci!r}")
 
     @classmethod
     def null(cls) -> Move:
@@ -623,7 +645,13 @@ class BaseBoard:
         self.occupied = BB_RANK_1 | BB_RANK_2 | BB_RANK_7 | BB_RANK_8
 
     def reset_board(self) -> None:
-        """Resets pieces to the starting position."""
+        """
+        Resets pieces to the starting position.
+
+        :class:`~chess.Board` also resets the move stack, but not turn,
+        castling rights and move counters. Use :func:`chess.Board.reset()` to
+        fully restore the starting position.
+        """
         self._reset_board()
 
     def _clear_board(self) -> None:
@@ -641,7 +669,11 @@ class BaseBoard:
         self.occupied = BB_EMPTY
 
     def clear_board(self) -> None:
-        """Clears the board."""
+        """
+        Clears the board.
+
+        :class:`~chess.Board` also clears the move stack.
+        """
         self._clear_board()
 
     def pieces_mask(self, piece_type: PieceType, color: Color) -> Bitboard:
@@ -877,6 +909,8 @@ class BaseBoard:
         """
         Removes the piece from the given square. Returns the
         :class:`~chess.Piece` or ``None`` if the square was already empty.
+
+        :class:`~chess.Board` also clears the move stack.
         """
         color = bool(self.occupied_co[WHITE] & BB_SQUARES[square])
         piece_type = self._remove_piece_at(square)
@@ -914,6 +948,8 @@ class BaseBoard:
 
         An existing piece is replaced. Setting *piece* to ``None`` is
         equivalent to :func:`~chess.Board.remove_piece_at()`.
+
+        :class:`~chess.Board` also clears the move stack.
         """
         if piece is None:
             self._remove_piece_at(square)
@@ -925,7 +961,7 @@ class BaseBoard:
         Gets the board FEN (e.g.,
         ``rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR``).
         """
-        builder = []
+        builder: List[str] = []
         empty = 0
 
         for square in SQUARES_180:
@@ -1010,6 +1046,8 @@ class BaseBoard:
         Parses *fen* and sets up the board, where *fen* is the board part of
         a FEN.
 
+        :class:`~chess.Board` also clears the move stack.
+
         :raises: :exc:`ValueError` if syntactically invalid.
         """
         self._set_board_fen(fen)
@@ -1018,7 +1056,7 @@ class BaseBoard:
         """
         Gets a dictionary of :class:`pieces <chess.Piece>` by square index.
         """
-        result = {}
+        result: Dict[Square, Piece] = {}
         for square in scan_reversed(self.occupied & mask):
             result[square] = typing.cast(Piece, self.piece_at(square))
         return result
@@ -1032,6 +1070,8 @@ class BaseBoard:
         """
         Sets up the board from a dictionary of :class:`pieces <chess.Piece>`
         by square index.
+
+        :class:`~chess.Board` also clears the move stack.
         """
         self._set_piece_map(pieces)
 
@@ -1185,7 +1225,7 @@ class BaseBoard:
         return f"{type(self).__name__}({self.board_fen()!r})"
 
     def __str__(self) -> str:
-        builder = []
+        builder: List[str] = []
 
         for square in SQUARES_180:
             piece = self.piece_at(square)
@@ -1203,7 +1243,7 @@ class BaseBoard:
 
         return "".join(builder)
 
-    def unicode(self, *, invert_color: bool = False, borders: bool = False, empty_square: str = "⭘") -> str:
+    def unicode(self, *, invert_color: bool = False, borders: bool = False, empty_square: str = "⭘", orientation: Color = WHITE) -> str:
         """
         Returns a string representation of the board with Unicode pieces.
         Useful for pretty-printing to a terminal.
@@ -1211,8 +1251,8 @@ class BaseBoard:
         :param invert_color: Invert color of the Unicode pieces.
         :param borders: Show borders and a coordinate margin.
         """
-        builder = []
-        for rank_index in range(7, -1, -1):
+        builder: List[str] = []
+        for rank_index in (range(7, -1, -1) if orientation else range(8)):
             if borders:
                 builder.append("  ")
                 builder.append("-" * 17)
@@ -1221,12 +1261,12 @@ class BaseBoard:
                 builder.append(RANK_NAMES[rank_index])
                 builder.append(" ")
 
-            for file_index in range(8):
+            for i, file_index in enumerate(range(8) if orientation else range(7, -1, -1)):
                 square_index = square(file_index, rank_index)
 
                 if borders:
                     builder.append("|")
-                elif file_index > 0:
+                elif i > 0:
                     builder.append(" ")
 
                 piece = self.piece_at(square_index)
@@ -1239,14 +1279,15 @@ class BaseBoard:
             if borders:
                 builder.append("|")
 
-            if borders or rank_index > 0:
+            if borders or (rank_index > 0 if orientation else rank_index < 7):
                 builder.append("\n")
 
         if borders:
             builder.append("  ")
             builder.append("-" * 17)
             builder.append("\n")
-            builder.append("   a b c d e f g h")
+            letters = "a b c d e f g h" if orientation else "h g f e d c b a"
+            builder.append("   " + letters)
 
         return "".join(builder)
 
@@ -1283,8 +1324,8 @@ class BaseBoard:
 
     def transform(self: BaseBoardT, f: Callable[[Bitboard], Bitboard]) -> BaseBoardT:
         """
-        Returns a transformed copy of the board by applying a bitboard
-        transformation function.
+        Returns a transformed copy of the board (without move stack)
+        by applying a bitboard transformation function.
 
         Available transformations include :func:`chess.flip_vertical()`,
         :func:`chess.flip_horizontal()`, :func:`chess.flip_diagonal()`,
@@ -1305,7 +1346,7 @@ class BaseBoard:
 
     def mirror(self: BaseBoardT) -> BaseBoardT:
         """
-        Returns a mirrored copy of the board.
+        Returns a mirrored copy of the board (without move stack).
 
         The board is mirrored vertically and piece colors are swapped, so that
         the position is equivalent modulo color.
@@ -1582,11 +1623,6 @@ class Board(BaseBoard):
         self.reset_board()
 
     def reset_board(self) -> None:
-        """
-        Resets only pieces to the starting position. Use
-        :func:`~chess.Board.reset()` to fully restore the starting position
-        (including turn, castling rights, etc.).
-        """
         super().reset_board()
         self.clear_stack()
 
@@ -2011,19 +2047,20 @@ class Board(BaseBoard):
         return self.can_claim_fifty_moves() or self.can_claim_threefold_repetition()
 
     def is_fifty_moves(self) -> bool:
+        """
+        Checks that the clock of halfmoves since the last capture or pawn move
+        is greater or equal to 100, and that no other means of ending the game
+        (like checkmate) take precedence.
+        """
         return self._is_halfmoves(100)
 
     def can_claim_fifty_moves(self) -> bool:
         """
         Checks if the player to move can claim a draw by the fifty-move rule.
 
-        :func:`~chess.Board.is_fifty_moves()` checks that the clock of
-        halfmoves since the last capture or pawn move is greater or equal
-        to 100, and that no other means of ending the game (like checkmate)
-        take precedence.
-
-        In addition, the fifty-move rule can also be claimed if there is a
-        legal move that achieves this condition.
+        In addition to :func:`~chess.Board.is_fifty_moves()`, the fifty-move
+        rule can also be claimed if there is a legal move that achieves this
+        condition.
         """
         if self.is_fifty_moves():
             return True
@@ -2045,7 +2082,7 @@ class Board(BaseBoard):
         Checks if the player to move can claim a draw by threefold repetition.
 
         Draw by threefold repetition can be claimed if the position on the
-        board occured for the third time or if such a repetition is reached
+        board occurred for the third time or if such a repetition is reached
         with one of the possible legal moves.
 
         Note that checking this can be slow: In the worst case
@@ -2057,7 +2094,7 @@ class Board(BaseBoard):
         transpositions.update((transposition_key, ))
 
         # Count positions.
-        switchyard = []
+        switchyard: List[Move] = []
         while self.move_stack:
             move = self.pop()
             switchyard.append(move)
@@ -2070,7 +2107,7 @@ class Board(BaseBoard):
         while switchyard:
             self.push(switchyard.pop())
 
-        # Threefold repetition occured.
+        # Threefold repetition occurred.
         if transpositions[transposition_key] >= 3:
             return True
 
@@ -2110,7 +2147,7 @@ class Board(BaseBoard):
 
         # Check full replay.
         transposition_key = self._transposition_key()
-        switchyard = []
+        switchyard: List[Move] = []
 
         try:
             while True:
@@ -2290,14 +2327,14 @@ class Board(BaseBoard):
         Castling moves are normalized to king moves by two steps, except in
         Chess960.
 
-        :raises: :exc:`ValueError` if no matching legal move is found.
+        :raises: :exc:`IllegalMoveError` if no matching legal move is found.
         """
         if promotion is None and self.pawns & BB_SQUARES[from_square] and BB_SQUARES[to_square] & BB_BACKRANKS:
             promotion = QUEEN
 
         move = self._from_chess960(self.chess960, from_square, to_square, promotion)
         if not self.is_legal(move):
-            raise ValueError(f"no matching legal move for {move.uci()} ({SQUARE_NAMES[from_square]} -> {SQUARE_NAMES[to_square]}) in {self.fen()}")
+            raise IllegalMoveError(f"no matching legal move for {move.uci()} ({SQUARE_NAMES[from_square]} -> {SQUARE_NAMES[to_square]}) in {self.fen()}")
 
         return move
 
@@ -2306,7 +2343,7 @@ class Board(BaseBoard):
         if not castling_rights:
             return "-"
 
-        builder = []
+        builder: List[str] = []
 
         for square in scan_reversed(castling_rights & BB_RANK_1):
             builder.append(FILE_NAMES[square_file(square)].upper())
@@ -2317,7 +2354,7 @@ class Board(BaseBoard):
         return "".join(builder)
 
     def castling_xfen(self) -> str:
-        builder = []
+        builder: List[str] = []
 
         for color in COLORS:
             king = self.king(color)
@@ -2353,7 +2390,7 @@ class Board(BaseBoard):
         """Checks if there is a legal en passant capture."""
         return self.ep_square is not None and any(self.generate_legal_ep())
 
-    def fen(self, *, shredder: bool = False, en_passant: _EnPassantSpec = "legal", promoted: Optional[bool] = None) -> str:
+    def fen(self, *, shredder: bool = False, en_passant: EnPassantSpec = "legal", promoted: Optional[bool] = None) -> str:
         """
         Gets a FEN representation of the position.
 
@@ -2385,7 +2422,7 @@ class Board(BaseBoard):
             str(self.fullmove_number)
         ])
 
-    def shredder_fen(self, *, en_passant: _EnPassantSpec = "legal", promoted: Optional[bool] = None) -> str:
+    def shredder_fen(self, *, en_passant: EnPassantSpec = "legal", promoted: Optional[bool] = None) -> str:
         return " ".join([
             self.epd(shredder=True, en_passant=en_passant, promoted=promoted),
             str(self.halfmove_clock),
@@ -2523,6 +2560,8 @@ class Board(BaseBoard):
         """
         Sets castling rights from a string in FEN notation like ``Qqk``.
 
+        Also clears the move stack.
+
         :raises: :exc:`ValueError` if the castling FEN is syntactically
             invalid.
         """
@@ -2576,7 +2615,7 @@ class Board(BaseBoard):
         return super().chess960_pos()
 
     def _epd_operations(self, operations: Mapping[str, Union[None, str, int, float, Move, Iterable[Move]]]) -> str:
-        epd = []
+        epd: List[str] = []
         first_op = True
 
         for opcode, operand in operations.items():
@@ -2619,7 +2658,7 @@ class Board(BaseBoard):
 
         return "".join(epd)
 
-    def epd(self, *, shredder: bool = False, en_passant: _EnPassantSpec = "legal", promoted: Optional[bool] = None, **operations: Union[None, str, int, float, Move, Iterable[Move]]) -> str:
+    def epd(self, *, shredder: bool = False, en_passant: EnPassantSpec = "legal", promoted: Optional[bool] = None, **operations: Union[None, str, int, float, Move, Iterable[Move]]) -> str:
         """
         Gets an EPD representation of the current position.
 
@@ -2747,7 +2786,7 @@ class Board(BaseBoard):
 
                     if opcode == "pv":
                         # A variation.
-                        variation = []
+                        variation: List[Move] = []
                         for token in operand.split():
                             move = position.parse_xboard(token)
                             variation.append(move)
@@ -2921,14 +2960,14 @@ class Board(BaseBoard):
 
         The board will not be modified as a result of calling this.
 
-        :raises: :exc:`ValueError` if any moves in the sequence are illegal.
+        :raises: :exc:`IllegalMoveError` if any moves in the sequence are illegal.
         """
         board = self.copy(stack=False)
-        san = []
+        san: List[str] = []
 
         for move in variation:
             if not board.is_legal(move):
-                raise ValueError(f"illegal move {move} in position {board.fen()}")
+                raise IllegalMoveError(f"illegal move {move} in position {board.fen()}")
 
             if board.turn == WHITE:
                 san.append(f"{board.fullmove_number}. {board.san_and_push(move)}")
@@ -2945,11 +2984,17 @@ class Board(BaseBoard):
         algebraic notation and returns the corresponding move object.
 
         Ambiguous moves are rejected. Overspecified moves (including long
-        algebraic notation) are accepted.
+        algebraic notation) are accepted. Some common syntactical deviations
+        are also accepted.
 
         The returned move is guaranteed to be either legal or a null move.
 
-        :raises: :exc:`ValueError` if the SAN is invalid, illegal or ambiguous.
+        :raises:
+            :exc:`ValueError` (specifically an exception specified below) if the SAN is invalid, illegal or ambiguous.
+
+            - :exc:`InvalidMoveError` if the SAN is syntactically invalid.
+            - :exc:`IllegalMoveError` if the SAN is illegal.
+            - :exc:`AmbiguousMoveError` if the SAN is ambiguous.
         """
         # Castling.
         try:
@@ -2958,7 +3003,7 @@ class Board(BaseBoard):
             elif san in ["O-O-O", "O-O-O+", "O-O-O#", "0-0-0", "0-0-0+", "0-0-0#"]:
                 return next(move for move in self.generate_castling_moves() if self.is_queenside_castling(move))
         except StopIteration:
-            raise ValueError(f"illegal san: {san!r} in {self.fen()}")
+            raise IllegalMoveError(f"illegal san: {san!r} in {self.fen()}")
 
         # Match normal moves.
         match = SAN_REGEX.match(san)
@@ -2967,9 +3012,9 @@ class Board(BaseBoard):
             if san in ["--", "Z0", "0000", "@@@@"]:
                 return Move.null()
             elif "," in san:
-                raise ValueError(f"unsupported multi-leg move: {san!r}")
+                raise InvalidMoveError(f"unsupported multi-leg move: {san!r}")
             else:
-                raise ValueError(f"invalid san: {san!r}")
+                raise InvalidMoveError(f"invalid san: {san!r}")
 
         # Get target square. Mask our own pieces to exclude castling moves.
         to_square = SQUARE_NAMES.index(match.group(4))
@@ -2999,9 +3044,13 @@ class Board(BaseBoard):
             if move.promotion == promotion:
                 return move
             else:
-                raise ValueError(f"missing promotion piece type: {san!r} in {self.fen()}")
+                raise IllegalMoveError(f"missing promotion piece type: {san!r} in {self.fen()}")
         else:
             from_mask &= self.pawns
+
+            # Do not allow pawn captures if file is not specified.
+            if not match.group(2):
+                from_mask &= BB_FILES[square_file(to_square)]
 
         # Match legal moves.
         matched_move = None
@@ -3010,12 +3059,12 @@ class Board(BaseBoard):
                 continue
 
             if matched_move:
-                raise ValueError(f"ambiguous san: {san!r} in {self.fen()}")
+                raise AmbiguousMoveError(f"ambiguous san: {san!r} in {self.fen()}")
 
             matched_move = move
 
         if not matched_move:
-            raise ValueError(f"illegal san: {san!r} in {self.fen()}")
+            raise IllegalMoveError(f"illegal san: {san!r} in {self.fen()}")
 
         return matched_move
 
@@ -3026,7 +3075,12 @@ class Board(BaseBoard):
 
         Returns the move.
 
-        :raises: :exc:`ValueError` if neither legal nor a null move.
+        :raises:
+            :exc:`ValueError` (specifically an exception specified below) if neither legal nor a null move.
+
+            - :exc:`InvalidMoveError` if the SAN is syntactically invalid.
+            - :exc:`IllegalMoveError` if the SAN is illegal.
+            - :exc:`AmbiguousMoveError` if the SAN is ambiguous.
         """
         move = self.parse_san(san)
         self.push(move)
@@ -3054,8 +3108,12 @@ class Board(BaseBoard):
 
         The returned move is guaranteed to be either legal or a null move.
 
-        :raises: :exc:`ValueError` if the move is invalid or illegal in the
+        :raises:
+            :exc:`ValueError` (specifically an exception specified below) if the move is invalid or illegal in the
             current position (but not a null move).
+
+            - :exc:`InvalidMoveError` if the UCI is syntactically invalid.
+            - :exc:`IllegalMoveError` if the UCI is illegal.
         """
         move = Move.from_uci(uci)
 
@@ -3066,7 +3124,7 @@ class Board(BaseBoard):
         move = self._from_chess960(self.chess960, move.from_square, move.to_square, move.promotion, move.drop)
 
         if not self.is_legal(move):
-            raise ValueError(f"illegal uci: {uci!r} in {self.fen()}")
+            raise IllegalMoveError(f"illegal uci: {uci!r} in {self.fen()}")
 
         return move
 
@@ -3076,8 +3134,12 @@ class Board(BaseBoard):
 
         Returns the move.
 
-        :raises: :exc:`ValueError` if the move is invalid or illegal in the
+        :raises:
+            :exc:`ValueError` (specifically an exception specified below) if the move is invalid or illegal in the
             current position (but not a null move).
+
+            - :exc:`InvalidMoveError` if the UCI is syntactically invalid.
+            - :exc:`IllegalMoveError` if the UCI is illegal.
         """
         move = self.parse_uci(uci)
         self.push(move)
@@ -3355,12 +3417,21 @@ class Board(BaseBoard):
         # More than the maximum number of possible checkers in the variant.
         checkers = self.checkers_mask()
         our_kings = self.kings & self.occupied_co[self.turn] & ~self.promoted
-        if popcount(checkers) > 2:
-            errors |= STATUS_TOO_MANY_CHECKERS
-        elif popcount(checkers) == 2 and ray(lsb(checkers), msb(checkers)) & our_kings:
-            errors |= STATUS_IMPOSSIBLE_CHECK
-        elif valid_ep_square is not None and any(ray(checker, valid_ep_square) & our_kings for checker in scan_reversed(checkers)):
-            errors |= STATUS_IMPOSSIBLE_CHECK
+        if checkers:
+            if popcount(checkers) > 2:
+                errors |= STATUS_TOO_MANY_CHECKERS
+
+            if valid_ep_square is not None:
+                pushed_to = valid_ep_square ^ A2
+                pushed_from = valid_ep_square ^ A4
+                occupied_before = (self.occupied & ~BB_SQUARES[pushed_to]) | BB_SQUARES[pushed_from]
+                if popcount(checkers) > 1 or (
+                        msb(checkers) != pushed_to and
+                        self._attacked_for_king(our_kings, occupied_before)):
+                    errors |= STATUS_IMPOSSIBLE_CHECK
+            else:
+                if popcount(checkers) > 2 or (popcount(checkers) == 2 and ray(lsb(checkers), msb(checkers)) & our_kings):
+                    errors |= STATUS_IMPOSSIBLE_CHECK
 
         return errors
 
@@ -3710,7 +3781,7 @@ class PseudoLegalMoveGenerator:
         return self.board.is_pseudo_legal(move)
 
     def __repr__(self) -> str:
-        builder = []
+        builder: List[str] = []
 
         for move in self:
             if self.board.is_legal(move):
@@ -3827,7 +3898,7 @@ class SquareSet:
 
     def __init__(self, squares: IntoSquareSet = BB_EMPTY) -> None:
         try:
-            self.mask = squares.__int__() & BB_ALL  # type: ignore
+            self.mask: Bitboard = squares.__int__() & BB_ALL  # type: ignore
             return
         except AttributeError:
             self.mask = 0
@@ -3869,11 +3940,11 @@ class SquareSet:
 
     def issubset(self, other: IntoSquareSet) -> bool:
         """Tests if this square set is a subset of another."""
-        return not bool(~self & other)
+        return not bool(self & ~SquareSet(other))
 
     def issuperset(self, other: IntoSquareSet) -> bool:
         """Tests if this square set is a superset of another."""
-        return not bool(self & ~SquareSet(other))
+        return not bool(~self & other)
 
     def union(self, other: IntoSquareSet) -> SquareSet:
         return self | other
@@ -4024,7 +4095,7 @@ class SquareSet:
         return f"SquareSet({self.mask:#021_x})"
 
     def __str__(self) -> str:
-        builder = []
+        builder: List[str] = []
 
         for square in SQUARES_180:
             mask = BB_SQUARES[square]

@@ -1,19 +1,3 @@
-# This file is part of the python-chess library.
-# Copyright (C) 2012-2021 Niklas Fiekas <niklas.fiekas@backscattering.de>
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
-
 from __future__ import annotations
 
 import abc
@@ -26,28 +10,21 @@ import dataclasses
 import enum
 import logging
 import math
-import warnings
 import shlex
 import subprocess
 import sys
 import threading
 import time
 import typing
-import os
 import re
 
 import chess
 
 from chess import Color
 from types import TracebackType
-from typing import Any, Callable, Coroutine, Deque, Dict, Generator, Generic, Iterable, Iterator, List, Mapping, MutableMapping, Optional, Tuple, Type, TypeVar, Union
+from typing import Any, Callable, Coroutine, Deque, Dict, Generator, Generic, Iterable, Iterator, List, Literal, Mapping, MutableMapping, Optional, Tuple, Type, TypedDict, TypeVar, Union
 
-try:
-    from typing import Literal
-    _WdlModel = Literal["sf", "sf14", "sf12", "lichess"]
-except ImportError:
-    # Before Python 3.8.
-    _WdlModel = str  # type: ignore
+WdlModel = Literal["sf", "sf16.1", "sf16", "sf15.1", "sf15", "sf14", "sf12", "lichess"]
 
 
 T = TypeVar("T")
@@ -63,136 +40,25 @@ LOGGER = logging.getLogger(__name__)
 MANAGED_OPTIONS = ["uci_chess960", "uci_variant", "multipv", "ponder"]
 
 
-class EventLoopPolicy(asyncio.AbstractEventLoopPolicy):
-    """
-    An event loop policy for thread-local event loops and child watchers.
-    Ensures each event loop is capable of spawning and watching subprocesses,
-    even when not running on the main thread.
-
-    Windows: Uses :class:`~asyncio.ProactorEventLoop`.
-
-    Unix: Uses :class:`~asyncio.SelectorEventLoop`. If available,
-    :class:`~asyncio.PidfdChildWatcher` is used to detect subprocess
-    termination (Python 3.9+ on Linux 5.3+). Otherwise, the default child
-    watcher is used on the main thread and relatively slow eager polling
-    is used on all other threads.
-    """
-    class _Local(threading.local):
-        loop: Optional[asyncio.AbstractEventLoop] = None
-        set_called = False
-        watcher: Optional[asyncio.AbstractChildWatcher] = None
-
-    def __init__(self) -> None:
-        self._local = self._Local()
-
-    def get_event_loop(self) -> asyncio.AbstractEventLoop:
-        if self._local.loop is None and not self._local.set_called and threading.current_thread() is threading.main_thread():
-            self.set_event_loop(self.new_event_loop())
-        if self._local.loop is None:
-            raise RuntimeError(f"no current event loop in thread {threading.current_thread().name!r}")
-        return self._local.loop
-
-    def set_event_loop(self, loop: Optional[asyncio.AbstractEventLoop]) -> None:
-        assert loop is None or isinstance(loop, asyncio.AbstractEventLoop)
-        self._local.set_called = True
-        self._local.loop = loop
-        if self._local.watcher is not None:
-            self._local.watcher.attach_loop(loop)
-
-    def new_event_loop(self) -> asyncio.AbstractEventLoop:
-        return asyncio.ProactorEventLoop() if sys.platform == "win32" else asyncio.SelectorEventLoop()  # type: ignore
-
-    def get_child_watcher(self) -> asyncio.AbstractChildWatcher:
-        if self._local.watcher is None:
-            self._local.watcher = self._init_watcher()
-            self._local.watcher.attach_loop(self._local.loop)
-        return self._local.watcher
-
-    def set_child_watcher(self, watcher: Optional[asyncio.AbstractChildWatcher]) -> None:
-        assert watcher is None or isinstance(watcher, asyncio.AbstractChildWatcher)
-        if self._local.watcher is not None:
-            self._local.watcher.close()
-        self._local.watcher = watcher
-
-    def _init_watcher(self) -> asyncio.AbstractChildWatcher:
-        if sys.platform == "win32":
-            raise NotImplementedError
-
-        try:
-            os.close(os.pidfd_open(os.getpid()))  # type: ignore
-            watcher: asyncio.AbstractChildWatcher = asyncio.PidfdChildWatcher()  # type: ignore
-            LOGGER.debug("Using PidfdChildWatcher")
-            return watcher
-        except (AttributeError, OSError):
-            # Before Python 3.9 or before Linux 5.3 or the syscall is not
-            # permitted.
-            pass
-
-        if threading.current_thread() is threading.main_thread():
-            try:
-                watcher = asyncio.ThreadedChildWatcher()
-                LOGGER.debug("Using ThreadedChildWatcher")
-                return watcher
-            except AttributeError:
-                # Before Python 3.8.
-                LOGGER.debug("Using SafeChildWatcher")
-                return asyncio.SafeChildWatcher()
-
-        class PollingChildWatcher(asyncio.SafeChildWatcher):
-            _loop: Optional[asyncio.AbstractEventLoop]
-            _callbacks: Dict[int, Any]
-
-            def __init__(self) -> None:
-                super().__init__()
-                self._poll_handle: Optional[asyncio.Handle] = None
-                self._poll_delay = 0.001
-
-            def attach_loop(self, loop: Optional[asyncio.AbstractEventLoop]) -> None:
-                assert loop is None or isinstance(loop, asyncio.AbstractEventLoop)
-
-                if self._loop is not None and loop is None and self._callbacks:
-                    warnings.warn("A loop is being detached from a child watcher with pending handlers", RuntimeWarning)
-
-                if self._poll_handle is not None:
-                    self._poll_handle.cancel()
-
-                self._loop = loop
-                if self._loop is not None:
-                    self._poll_handle = self._loop.call_soon(self._poll)
-                    self._do_waitpid_all()  # type: ignore
-
-            def _poll(self) -> None:
-                if self._loop:
-                    self._do_waitpid_all()  # type: ignore
-                    self._poll_delay = min(self._poll_delay * 2, 1.0)
-                    self._poll_handle = self._loop.call_later(self._poll_delay, self._poll)
-
-        LOGGER.debug("Using PollingChildWatcher")
-        return PollingChildWatcher()
+# No longer needed, but alias kept around for compatibility.
+EventLoopPolicy = asyncio.DefaultEventLoopPolicy
 
 
-def run_in_background(coroutine: Callable[[concurrent.futures.Future[T]], Coroutine[Any, Any, None]], *, name: Optional[str] = None, debug: bool = False, _policy_lock: threading.Lock = threading.Lock()) -> T:
+def run_in_background(coroutine: Callable[[concurrent.futures.Future[T]], Coroutine[Any, Any, None]], *, name: Optional[str] = None, debug: Optional[bool] = None) -> T:
     """
     Runs ``coroutine(future)`` in a new event loop on a background thread.
 
     Blocks on *future* and returns the result as soon as it is resolved.
     The coroutine and all remaining tasks continue running in the background
     until complete.
-
-    Note: This installs a :class:`chess.engine.EventLoopPolicy` for the entire
-    process.
     """
     assert asyncio.iscoroutinefunction(coroutine)
-
-    with _policy_lock:
-        if not isinstance(asyncio.get_event_loop_policy(), EventLoopPolicy):
-            asyncio.set_event_loop_policy(EventLoopPolicy())
 
     future: concurrent.futures.Future[T] = concurrent.futures.Future()
 
     def background() -> None:
         try:
-            asyncio.run(coroutine(future))
+            asyncio.run(coroutine(future), debug=debug)
             future.cancel()
         except Exception as exc:
             future.set_exception(exc)
@@ -332,6 +198,14 @@ class Limit:
     *white_clock* and *black_clock* are, then it is sudden death.
     """
 
+    clock_id: object = None
+    """
+    An identifier to use with XBoard engines to signal that the time
+    control has changed. When this field changes, Xboard engines are
+    sent level or st commands as appropriate. Otherwise, only time
+    and otim commands are sent to update the engine's clock.
+    """
+
     def __repr__(self) -> str:
         # Like default __repr__, but without None values.
         return "{}({})".format(
@@ -341,41 +215,37 @@ class Limit:
                       if getattr(self, attr) is not None))
 
 
-try:
-    class InfoDict(typing.TypedDict, total=False):
-        """
-        Dictionary of aggregated information sent by the engine.
+class InfoDict(TypedDict, total=False):
+    """
+    Dictionary of aggregated information sent by the engine.
 
-        Commonly used keys are: ``score`` (a :class:`~chess.engine.PovScore`),
-        ``pv`` (a list of :class:`~chess.Move` objects), ``depth``,
-        ``seldepth``, ``time`` (in seconds), ``nodes``, ``nps``, ``multipv``
-        (``1`` for the mainline).
+    Commonly used keys are: ``score`` (a :class:`~chess.engine.PovScore`),
+    ``pv`` (a list of :class:`~chess.Move` objects), ``depth``,
+    ``seldepth``, ``time`` (in seconds), ``nodes``, ``nps``, ``multipv``
+    (``1`` for the mainline).
 
-        Others: ``tbhits``, ``currmove``, ``currmovenumber``, ``hashfull``,
-        ``cpuload``, ``refutation``, ``currline``, ``ebf`` (effective branching factor),
-        ``wdl`` (a :class:`~chess.engine.PovWdl`), and ``string``.
-        """
-        score: PovScore
-        pv: List[chess.Move]
-        depth: int
-        seldepth: int
-        time: float
-        nodes: int
-        nps: int
-        tbhits: int
-        multipv: int
-        currmove: chess.Move
-        currmovenumber: int
-        hashfull: int
-        cpuload: int
-        refutation: Dict[chess.Move, List[chess.Move]]
-        currline: Dict[int, List[chess.Move]]
-        ebf: float
-        wdl: PovWdl
-        string: str
-except AttributeError:
-    # Before Python 3.8.
-    InfoDict = dict  # type: ignore
+    Others: ``tbhits``, ``currmove``, ``currmovenumber``, ``hashfull``,
+    ``cpuload``, ``refutation``, ``currline``, ``ebf`` (effective branching factor),
+    ``wdl`` (a :class:`~chess.engine.PovWdl`), and ``string``.
+    """
+    score: PovScore
+    pv: List[chess.Move]
+    depth: int
+    seldepth: int
+    time: float
+    nodes: int
+    nps: int
+    tbhits: int
+    multipv: int
+    currmove: chess.Move
+    currmovenumber: int
+    hashfull: int
+    cpuload: int
+    refutation: Dict[chess.Move, List[chess.Move]]
+    currline: Dict[int, List[chess.Move]]
+    ebf: float
+    wdl: PovWdl
+    string: str
 
 
 class PlayResult:
@@ -438,6 +308,23 @@ INFO_CURRLINE = Info.CURRLINE
 INFO_ALL = Info.ALL
 
 
+@dataclasses.dataclass
+class Opponent:
+    """Used to store information about an engine's opponent."""
+
+    name: Optional[str]
+    """The name of the opponent."""
+
+    title: Optional[str]
+    """The opponent's title--for example, GM, IM, or BOT."""
+
+    rating: Optional[int]
+    """The opponent's ELO rating."""
+
+    is_engine: Optional[bool]
+    """Whether the opponent is a chess engine/computer program."""
+
+
 class PovScore:
     """A relative :class:`~chess.engine.Score` and the point of view."""
 
@@ -467,9 +354,9 @@ class PovScore:
         """Tests if this is a mate score."""
         return self.relative.is_mate()
 
-    def wdl(self, *, model: _WdlModel = "sf", ply: int = 30) -> PovWdl:
+    def wdl(self, *, model: WdlModel = "sf", ply: int = 30) -> PovWdl:
         """See :func:`~chess.engine.Score.wdl()`."""
-        return PovWdl(self.relative.wdl(), self.turn)
+        return PovWdl(self.relative.wdl(model=model, ply=ply), self.turn)
 
     def __repr__(self) -> str:
         return "PovScore({!r}, {})".format(self.relative, "WHITE" if self.turn else "BLACK")
@@ -544,7 +431,7 @@ class Score(abc.ABC):
         return self.mate() is not None
 
     @abc.abstractmethod
-    def wdl(self, *, model: _WdlModel = "sf", ply: int = 30) -> Wdl:
+    def wdl(self, *, model: WdlModel = "sf", ply: int = 30) -> Wdl:
         """
         Returns statistics for the expected outcome of this game, based on
         a *model*, given that this score is reached at *ply*.
@@ -564,7 +451,10 @@ class Score(abc.ABC):
 
         :param model:
             * ``sf``, the WDL model used by the latest Stockfish
-              (currently ``sf14``).
+              (currently ``sf16``).
+            * ``sf16``, the WDL model used by Stockfish 16.
+            * ``sf15.1``, the WDL model used by Stockfish 15.1.
+            * ``sf15``, the WDL model used by Stockfish 15.
             * ``sf14``, the WDL model used by Stockfish 14.
             * ``sf12``, the WDL model used by Stockfish 12.
             * ``lichess``, the win rate model used by Lichess.
@@ -626,6 +516,43 @@ class Score(abc.ABC):
         else:
             return NotImplemented
 
+def _sf16_1_wins(cp: int, *, ply: int) -> int:
+    # https://github.com/official-stockfish/Stockfish/blob/sf_16.1/src/uci.cpp#L48
+    NormalizeToPawnValue = 356
+    # https://github.com/official-stockfish/Stockfish/blob/sf_16.1/src/uci.cpp#L383-L384
+    m = min(120, max(8, ply / 2 + 1)) / 32
+    a = (((-1.06249702 * m + 7.42016937) * m + 0.89425629) * m) + 348.60356174
+    b = (((-5.33122190 * m + 39.57831533) * m + -90.84473771) * m) + 123.40620748
+    x = min(4000, max(cp * NormalizeToPawnValue / 100, -4000))
+    return int(0.5 + 1000 / (1 + math.exp((a - x) / b)))
+
+def _sf16_wins(cp: int, *, ply: int) -> int:
+    # https://github.com/official-stockfish/Stockfish/blob/sf_16/src/uci.h#L38
+    NormalizeToPawnValue = 328
+    # https://github.com/official-stockfish/Stockfish/blob/sf_16/src/uci.cpp#L200-L224
+    m = min(240, max(ply, 0)) / 64
+    a = (((0.38036525 * m + -2.82015070) * m + 23.17882135) * m) + 307.36768407
+    b = (((-2.29434733 * m + 13.27689788) * m + -14.26828904) * m) + 63.45318330
+    x = min(4000, max(cp * NormalizeToPawnValue / 100, -4000))
+    return int(0.5 + 1000 / (1 + math.exp((a - x) / b)))
+
+def _sf15_1_wins(cp: int, *, ply: int) -> int:
+    # https://github.com/official-stockfish/Stockfish/blob/sf_15.1/src/uci.h#L38
+    NormalizeToPawnValue = 361
+    # https://github.com/official-stockfish/Stockfish/blob/sf_15.1/src/uci.cpp#L200-L224
+    m = min(240, max(ply, 0)) / 64
+    a = (((-0.58270499 * m + 2.68512549) * m + 15.24638015) * m) + 344.49745382
+    b = (((-2.65734562 * m + 15.96509799) * m + -20.69040836) * m) + 73.61029937
+    x = min(4000, max(cp * NormalizeToPawnValue / 100, -4000))
+    return int(0.5 + 1000 / (1 + math.exp((a - x) / b)))
+
+def _sf15_wins(cp: int, *, ply: int) -> int:
+    # https://github.com/official-stockfish/Stockfish/blob/sf_15/src/uci.cpp#L200-L220
+    m = min(240, max(ply, 0)) / 64
+    a = (((-1.17202460e-1 * m + 5.94729104e-1) * m + 1.12065546e+1) * m) + 1.22606222e+2
+    b = (((-1.79066759 * m + 11.30759193) * m + -17.43677612) * m) + 36.47147479
+    x = min(2000, max(cp, -2000))
+    return int(0.5 + 1000 / (1 + math.exp((a - x) / b)))
 
 def _sf14_wins(cp: int, *, ply: int) -> int:
     # https://github.com/official-stockfish/Stockfish/blob/sf_14/src/uci.cpp#L200-L220
@@ -644,7 +571,9 @@ def _sf12_wins(cp: int, *, ply: int) -> int:
     return int(0.5 + 1000 / (1 + math.exp((a - x) / b)))
 
 def _lichess_raw_wins(cp: int) -> int:
-    return round(1000 / (1 + math.exp(-0.004 * cp)))
+    # https://github.com/lichess-org/lila/pull/11148
+    # https://github.com/lichess-org/lila/blob/2242b0a08faa06e7be5508d338ede7bb09049777/modules/analyse/src/main/WinPercent.scala#L26-L30
+    return round(1000 / (1 + math.exp(-0.00368208 * cp)))
 
 
 class Cp(Score):
@@ -659,16 +588,28 @@ class Cp(Score):
     def score(self, *, mate_score: Optional[int] = None) -> int:
         return self.cp
 
-    def wdl(self, *, model: _WdlModel = "sf", ply: int = 30) -> Wdl:
+    def wdl(self, *, model: WdlModel = "sf", ply: int = 30) -> Wdl:
         if model == "lichess":
             wins = _lichess_raw_wins(max(-1000, min(self.cp, 1000)))
             losses = 1000 - wins
         elif model == "sf12":
             wins = _sf12_wins(self.cp, ply=ply)
             losses = _sf12_wins(-self.cp, ply=ply)
-        else:
+        elif model == "sf14":
             wins = _sf14_wins(self.cp, ply=ply)
             losses = _sf14_wins(-self.cp, ply=ply)
+        elif model == "sf15":
+            wins = _sf15_wins(self.cp, ply=ply)
+            losses = _sf15_wins(-self.cp, ply=ply)
+        elif model == "sf15.1":
+            wins = _sf15_1_wins(self.cp, ply=ply)
+            losses = _sf15_1_wins(-self.cp, ply=ply)
+        elif model == "sf16":
+            wins = _sf16_wins(self.cp, ply=ply)
+            losses = _sf16_wins(-self.cp, ply=ply)
+        else:
+            wins = _sf16_1_wins(self.cp, ply=ply)
+            losses = _sf16_1_wins(-self.cp, ply=ply)
         draws = 1000 - wins - losses
         return Wdl(wins, draws, losses)
 
@@ -709,7 +650,7 @@ class Mate(Score):
         else:
             return -mate_score - self.moves
 
-    def wdl(self, *, model: _WdlModel = "sf", ply: int = 30) -> Wdl:
+    def wdl(self, *, model: WdlModel = "sf", ply: int = 30) -> Wdl:
         if model == "lichess":
             cp = (21 - min(10, abs(self.moves))) * 100
             wins = _lichess_raw_wins(cp)
@@ -746,7 +687,7 @@ class MateGivenType(Score):
     def score(self, *, mate_score: Optional[int] = None) -> Optional[int]:
         return mate_score
 
-    def wdl(self, *, model: _WdlModel = "sf", ply: int = 30) -> Wdl:
+    def wdl(self, *, model: WdlModel = "sf", ply: int = 30) -> Wdl:
         return Wdl(1000, 0, 0)
 
     def __neg__(self) -> Mate:
@@ -924,13 +865,13 @@ class MockTransport(asyncio.SubprocessTransport, asyncio.WriteTransport):
 
             if line.startswith("ping ") and self.expected_pings:
                 self.expected_pings -= 1
-                self.protocol.pipe_data_received(1, line.replace("ping ", "pong ").encode("utf-8") + b"\n")
+                self.protocol.pipe_data_received(1, (line.replace("ping ", "pong ") + "\n").encode("utf-8"))
             else:
                 assert self.expectations, f"unexpected: {line!r}"
                 expectation, responses = self.expectations.popleft()
                 assert expectation == line, f"expected {expectation}, got: {line}"
                 if responses:
-                    self.protocol.pipe_data_received(1, "\n".join(responses).encode("utf-8") + b"\n")
+                    self.protocol.pipe_data_received(1, "\n".join(responses + [""]).encode("utf-8"))
 
     def get_pid(self) -> int:
         return id(self)
@@ -998,8 +939,7 @@ class Protocol(asyncio.SubprocessProtocol, metaclass=abc.ABCMeta):
         assert self.transport is not None, "cannot send line before connection is made"
         stdin = self.transport.get_pipe_transport(0)
         # WriteTransport expected, but not checked to allow duck typing.
-        stdin.write(line.encode("utf-8"))  # type: ignore
-        stdin.write(b"\n")  # type: ignore
+        stdin.write((line + "\n").encode("utf-8"))  # type: ignore
 
     def pipe_data_received(self, fd: int, data: Union[bytes, str]) -> None:
         self.buffer[fd].extend(data)  # type: ignore
@@ -1095,7 +1035,19 @@ class Protocol(asyncio.SubprocessProtocol, metaclass=abc.ABCMeta):
         """
 
     @abc.abstractmethod
-    async def play(self, board: chess.Board, limit: Limit, *, game: object = None, info: Info = INFO_NONE, ponder: bool = False, draw_offered: bool = False, root_moves: Optional[Iterable[chess.Move]] = None, options: ConfigMapping = {}) -> PlayResult:
+    async def send_opponent_information(self, *, opponent: Optional[Opponent] = None, engine_rating: Optional[int] = None) -> None:
+        """
+        Sends the engine information about its opponent. The information will
+        be sent after a new game is announced and before the first move. This
+        method should be called before the first move of a game--i.e., the
+        first call to :func:`chess.engine.Protocol.play()`.
+
+        :param opponent: Optional. An instance of :class:`chess.engine.Opponent` that has the opponent's information.
+        :param engine_rating: Optional. This engine's own rating. Only used by XBoard engines.
+        """
+
+    @abc.abstractmethod
+    async def play(self, board: chess.Board, limit: Limit, *, game: object = None, info: Info = INFO_NONE, ponder: bool = False, draw_offered: bool = False, root_moves: Optional[Iterable[chess.Move]] = None, options: ConfigMapping = {}, opponent: Optional[Opponent] = None) -> PlayResult:
         """
         Plays a position.
 
@@ -1107,7 +1059,7 @@ class Protocol(asyncio.SubprocessProtocol, metaclass=abc.ABCMeta):
             Will automatically inform the engine if the object is not equal
             to the previous game (e.g., ``ucinewgame``, ``new``).
         :param info: Selects which additional information to retrieve from the
-            engine. ``INFO_NONE``, ``INFO_BASE`` (basic information that is
+            engine. ``INFO_NONE``, ``INFO_BASIC`` (basic information that is
             trivial to obtain), ``INFO_SCORE``, ``INFO_PV``,
             ``INFO_REFUTATION``, ``INFO_CURRLINE``, ``INFO_ALL`` or any
             bitwise combination. Some overhead is associated with parsing
@@ -1121,6 +1073,10 @@ class Protocol(asyncio.SubprocessProtocol, metaclass=abc.ABCMeta):
             analysis. The previous configuration will be restored after the
             analysis is complete. You can permanently apply a configuration
             with :func:`~chess.engine.Protocol.configure()`.
+        :param opponent: Optional. Information about a new opponent. Information
+            about the original opponent will be restored once the move is
+            complete. New opponent information can be made permanent with
+            :func:`~chess.engine.Protocol.send_opponent_information()`.
         """
 
     @typing.overload
@@ -1145,7 +1101,7 @@ class Protocol(asyncio.SubprocessProtocol, metaclass=abc.ABCMeta):
             Will automatically inform the engine if the object is not equal
             to the previous game (e.g., ``ucinewgame``, ``new``).
         :param info: Selects which information to retrieve from the
-            engine. ``INFO_NONE``, ``INFO_BASE`` (basic information that is
+            engine. ``INFO_NONE``, ``INFO_BASIC`` (basic information that is
             trivial to obtain), ``INFO_SCORE``, ``INFO_PV``,
             ``INFO_REFUTATION``, ``INFO_CURRLINE``, ``INFO_ALL`` or any
             bitwise combination. Some overhead is associated with parsing
@@ -1178,7 +1134,7 @@ class Protocol(asyncio.SubprocessProtocol, metaclass=abc.ABCMeta):
             Will automatically inform the engine if the object is not equal
             to the previous game (e.g., ``ucinewgame``, ``new``).
         :param info: Selects which information to retrieve from the
-            engine. ``INFO_NONE``, ``INFO_BASE`` (basic information that is
+            engine. ``INFO_NONE``, ``INFO_BASIC`` (basic information that is
             trivial to obtain), ``INFO_SCORE``, ``INFO_PV``,
             ``INFO_REFUTATION``, ``INFO_CURRLINE``, ``INFO_ALL`` or any
             bitwise combination. Some overhead is associated with parsing
@@ -1192,6 +1148,32 @@ class Protocol(asyncio.SubprocessProtocol, metaclass=abc.ABCMeta):
         Returns :class:`~chess.engine.AnalysisResult`, a handle that allows
         asynchronously iterating over the information sent by the engine
         and stopping the analysis at any time.
+        """
+
+    @abc.abstractmethod
+    async def send_game_result(self, board: chess.Board, winner: Optional[Color] = None, game_ending: Optional[str] = None, game_complete: bool = True) -> None:
+        """
+        Sends the engine the result of the game.
+
+        XBoard engines receive the final moves and a line of the form
+        ``result <winner> {<ending>}``. The ``<winner>`` field is one of ``1-0``,
+        ``0-1``, ``1/2-1/2``, or ``*`` to indicate white won, black won, draw,
+        or adjournment, respectively. The ``<ending>`` field is a description
+        of the specific reason for the end of the game: "White mates",
+        "Time forfeiture", "Stalemate", etc.
+
+        UCI engines do not expect end-of-game information and so are not
+        sent anything.
+
+        :param board: The final state of the board.
+        :param winner: Optional. Specify the winner of the game. This is useful
+            if the result of the game is not evident from the board--e.g., time
+            forfeiture or draw by agreement. If not ``None``, this parameter
+            overrides any winner derivable from the board.
+        :param game_ending: Optional. Text describing the reason for the game
+            ending. Similarly to the winner parameter, this overrides any game
+            result derivable from the board.
+        :param game_complete: Optional. Whether the game reached completion.
         """
 
     @abc.abstractmethod
@@ -1209,9 +1191,13 @@ class Protocol(asyncio.SubprocessProtocol, metaclass=abc.ABCMeta):
                 popen_args["creationflags"] = popen_args.get("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore
             except AttributeError:
                 # Unix.
-                popen_args["start_new_session"] = True
+                if sys.version_info >= (3, 11):
+                    popen_args["process_group"] = 0
+                else:
+                    # Before Python 3.11
+                    popen_args["start_new_session"] = True
 
-        return await asyncio.get_running_loop().subprocess_exec(cls, *command, **popen_args)  # type: ignore
+        return await asyncio.get_running_loop().subprocess_exec(cls, *command, **popen_args)
 
 
 class CommandState(enum.Enum):
@@ -1229,7 +1215,8 @@ class BaseCommand(Generic[ProtocolT, T]):
         self.finished: asyncio.Future[None] = asyncio.Future()
 
     def _engine_terminated(self, engine: ProtocolT, code: int) -> None:
-        exc = EngineTerminatedError(f"engine process died unexpectedly (exit code: {code})")
+        hint = ", binary not compatible with cpu?" if code in [-4, 0xc000001d] else ""
+        exc = EngineTerminatedError(f"engine process died unexpectedly (exit code: {code}{hint})")
         if self.state == CommandState.ACTIVE:
             self.engine_terminated(engine, exc)
         elif self.state == CommandState.CANCELLING:
@@ -1329,66 +1316,47 @@ class UciProtocol(Protocol):
                 engine.send_line("uci")
 
             def line_received(self, engine: UciProtocol, line: str) -> None:
-                if line == "uciok" and not self.result.done():
+                token, remaining = _next_token(line)
+                if line.strip() == "uciok" and not self.result.done():
                     engine.initialized = True
                     self.result.set_result(None)
                     self.set_finished()
-                elif line.startswith("option "):
-                    self._option(engine, line.split(" ", 1)[1])
-                elif line.startswith("id "):
-                    self._id(engine, line.split(" ", 1)[1])
+                elif token == "option":
+                    self._option(engine, remaining)
+                elif token == "id":
+                    self._id(engine, remaining)
 
             def _option(self, engine: UciProtocol, arg: str) -> None:
                 current_parameter = None
-
-                name: List[str] = []
-                type: List[str] = []
-                default: List[str] = []
-                min = None
-                max = None
-                current_var = None
+                option_parts: dict[str, str] = {k: "" for k in ["name", "type", "default", "min", "max"]}
                 var = []
 
-                for token in arg.split(" "):
-                    if token == "name" and not name:
-                        current_parameter = "name"
-                    elif token == "type" and not type:
-                        current_parameter = "type"
-                    elif token == "default" and not default:
-                        current_parameter = "default"
-                    elif token == "min" and min is None:
-                        current_parameter = "min"
-                    elif token == "max" and max is None:
-                        current_parameter = "max"
-                    elif token == "var":
-                        current_parameter = "var"
-                        if current_var is not None:
-                            var.append(" ".join(current_var))
-                        current_var = []
-                    elif current_parameter == "name":
-                        name.append(token)
-                    elif current_parameter == "type":
-                        type.append(token)
-                    elif current_parameter == "default":
-                        default.append(token)
+                parameters = list(option_parts.keys()) + ['var']
+                option_regex = fr"\s*({'|'.join(parameters)})\s*"
+                for token in re.split(option_regex, arg.strip()):
+                    if token == "var" or (token in option_parts and not option_parts[token]):
+                        current_parameter = token
                     elif current_parameter == "var":
-                        current_var.append(token)
-                    elif current_parameter == "min":
-                        try:
-                            min = int(token)
-                        except ValueError:
-                            LOGGER.exception("Exception parsing option min")
-                    elif current_parameter == "max":
-                        try:
-                            max = int(token)
-                        except ValueError:
-                            LOGGER.exception("Exception parsing option max")
+                        var.append(token)
+                    elif current_parameter:
+                        option_parts[current_parameter] = token
 
-                if current_var is not None:
-                    var.append(" ".join(current_var))
+                def parse_min_max_value(option_parts: dict[str, str], which: Literal["min", "max"]) -> Optional[int]:
+                    try:
+                        number = option_parts[which]
+                        return int(number) if number else None
+                    except ValueError:
+                        LOGGER.exception(f"Exception parsing option {which}")
+                        return None
 
-                without_default = Option(" ".join(name), " ".join(type), None, min, max, var)
-                option = Option(without_default.name, without_default.type, without_default.parse(" ".join(default)), min, max, var)
+                name = option_parts["name"]
+                type = option_parts["type"]
+                default = option_parts["default"]
+                min = parse_min_max_value(option_parts, "min")
+                max = parse_min_max_value(option_parts, "max")
+
+                without_default = Option(name, type, None, min, max, var)
+                option = Option(without_default.name, without_default.type, without_default.parse(default), min, max, var)
                 engine.options[option.name] = option
 
                 if option.default is not None:
@@ -1397,16 +1365,22 @@ class UciProtocol(Protocol):
                     engine.target_config[option.name] = option.default
 
             def _id(self, engine: UciProtocol, arg: str) -> None:
-                key, value = arg.split(" ", 1)
-                engine.id[key] = value
+                key, value = _next_token(arg)
+                engine.id[key] = value.strip()
 
         return await self.communicate(UciInitializeCommand)
 
     def _isready(self) -> None:
         self.send_line("isready")
 
+    def _opponent_info(self) -> None:
+        opponent_info = self.config.get("UCI_Opponent") or self.target_config.get("UCI_Opponent")
+        if opponent_info:
+            self.send_line(f"setoption name UCI_Opponent value {opponent_info}")
+
     def _ucinewgame(self) -> None:
         self.send_line("ucinewgame")
+        self._opponent_info()
         self.first_game = False
         self.ponderhit = False
 
@@ -1426,7 +1400,7 @@ class UciProtocol(Protocol):
                 engine._isready()
 
             def line_received(self, engine: UciProtocol, line: str) -> None:
-                if line == "readyok":
+                if line.strip() == "readyok":
                     self.result.set_result(None)
                     self.set_finished()
                 else:
@@ -1435,7 +1409,7 @@ class UciProtocol(Protocol):
         return await self.communicate(UciPingCommand)
 
     def _changed_options(self, options: ConfigMapping) -> bool:
-        return any(value is None or value != self.config.get(name) for name, value in collections.ChainMap(options, self.target_config).items())
+        return any(value is None or value != self.config.get(name) for name, value in _chain_config(options, self.target_config))
 
     def _setoption(self, name: str, value: ConfigValue) -> None:
         try:
@@ -1453,11 +1427,12 @@ class UciProtocol(Protocol):
                 builder.append("value")
                 builder.append(str(value))
 
-            self.send_line(" ".join(builder))
+            if name != "UCI_Opponent":  # sent after ucinewgame
+                self.send_line(" ".join(builder))
             self.config[name] = value
 
     def _configure(self, options: ConfigMapping) -> None:
-        for name, value in collections.ChainMap(options, self.target_config).items():
+        for name, value in _chain_config(options, self.target_config):
             if name.lower() in MANAGED_OPTIONS:
                 raise EngineError("cannot set {} which is automatically managed".format(name))
             self._setoption(name, value)
@@ -1471,6 +1446,18 @@ class UciProtocol(Protocol):
                 self.set_finished()
 
         return await self.communicate(UciConfigureCommand)
+
+    def _opponent_configuration(self, *, opponent: Optional[Opponent] = None) -> ConfigMapping:
+        if opponent and opponent.name and "UCI_Opponent" in self.options:
+            rating = opponent.rating or "none"
+            title = opponent.title or "none"
+            player_type = "computer" if opponent.is_engine else "human"
+            return {"UCI_Opponent": f"{title} {rating} {player_type} {opponent.name}"}
+        else:
+            return {}
+
+    async def send_opponent_information(self, *, opponent: Optional[Opponent] = None, engine_rating: Optional[int] = None) -> None:
+        return await self.configure(self._opponent_configuration(opponent=opponent))
 
     def _position(self, board: chess.Board) -> None:
         # Select UCI_Variant and UCI_Chess960.
@@ -1512,16 +1499,16 @@ class UciProtocol(Protocol):
             builder.append("ponder")
         if limit.white_clock is not None:
             builder.append("wtime")
-            builder.append(str(max(1, int(limit.white_clock * 1000))))
+            builder.append(str(max(1, round(limit.white_clock * 1000))))
         if limit.black_clock is not None:
             builder.append("btime")
-            builder.append(str(max(1, int(limit.black_clock * 1000))))
+            builder.append(str(max(1, round(limit.black_clock * 1000))))
         if limit.white_inc is not None:
             builder.append("winc")
-            builder.append(str(int(limit.white_inc * 1000)))
+            builder.append(str(round(limit.white_inc * 1000)))
         if limit.black_inc is not None:
             builder.append("binc")
-            builder.append(str(int(limit.black_inc * 1000)))
+            builder.append(str(round(limit.black_inc * 1000)))
         if limit.remaining_moves is not None and int(limit.remaining_moves) > 0:
             builder.append("movestogo")
             builder.append(str(int(limit.remaining_moves)))
@@ -1536,7 +1523,7 @@ class UciProtocol(Protocol):
             builder.append(str(max(1, int(limit.mate))))
         if limit.time is not None:
             builder.append("movetime")
-            builder.append(str(max(1, int(limit.time * 1000))))
+            builder.append(str(max(1, round(limit.time * 1000))))
         if infinite:
             builder.append("infinite")
         if root_moves is not None:
@@ -1548,9 +1535,11 @@ class UciProtocol(Protocol):
                 builder.append("0000")
         self.send_line(" ".join(builder))
 
-    async def play(self, board: chess.Board, limit: Limit, *, game: object = None, info: Info = INFO_NONE, ponder: bool = False, draw_offered: bool = False, root_moves: Optional[Iterable[chess.Move]] = None, options: ConfigMapping = {}) -> PlayResult:
-        same_game = not self.first_game and game == self.game and not options
-        self.last_move = board.move_stack[-1] if (same_game and ponder and board.move_stack) else chess.Move.null()
+    async def play(self, board: chess.Board, limit: Limit, *, game: object = None, info: Info = INFO_NONE, ponder: bool = False, draw_offered: bool = False, root_moves: Optional[Iterable[chess.Move]] = None, options: ConfigMapping = {}, opponent: Optional[Opponent] = None) -> PlayResult:
+        new_options: Dict[str, ConfigValue] = {}
+        for name, value in options.items():
+            new_options[name] = value
+        new_options.update(self._opponent_configuration(opponent=opponent))
 
         class UciPlayCommand(BaseCommand[UciProtocol, PlayResult]):
             def __init__(self, engine: UciProtocol):
@@ -1559,7 +1548,7 @@ class UciProtocol(Protocol):
                 # May ponderhit only in the same game and with unchanged target
                 # options. The managed options UCI_AnalyseMode, Ponder, and
                 # MultiPV never change between pondering play commands.
-                engine.may_ponderhit = board if ponder and not engine.first_game and game == engine.game and not engine._changed_options(options) else None
+                engine.may_ponderhit = board if ponder and not engine.first_game and game == engine.game and not engine._changed_options(new_options) else None
 
             def start(self, engine: UciProtocol) -> None:
                 self.info: InfoDict = {}
@@ -1572,16 +1561,18 @@ class UciProtocol(Protocol):
                     engine.send_line("ponderhit")
                     return
 
-                if "UCI_AnalyseMode" in engine.options and "UCI_AnalyseMode" not in engine.target_config and all(name.lower() != "uci_analysemode" for name in options):
+                if "UCI_AnalyseMode" in engine.options and "UCI_AnalyseMode" not in engine.target_config and all(name.lower() != "uci_analysemode" for name in new_options):
                     engine._setoption("UCI_AnalyseMode", False)
                 if "Ponder" in engine.options:
                     engine._setoption("Ponder", ponder)
                 if "MultiPV" in engine.options:
                     engine._setoption("MultiPV", engine.options["MultiPV"].default)
 
-                engine._configure(options)
+                new_opponent = new_options.get("UCI_Opponent") or engine.target_config.get("UCI_Opponent")
+                opponent_changed = new_opponent != engine.config.get("UCI_Opponent")
+                engine._configure(new_options)
 
-                if engine.first_game or engine.game != game:
+                if engine.first_game or engine.game != game or opponent_changed:
                     engine.game = game
                     engine._ucinewgame()
                     self.sent_isready = True
@@ -1590,11 +1581,12 @@ class UciProtocol(Protocol):
                     self._readyok(engine)
 
             def line_received(self, engine: UciProtocol, line: str) -> None:
-                if line.startswith("info "):
-                    self._info(engine, line.split(" ", 1)[1])
-                elif line.startswith("bestmove "):
-                    self._bestmove(engine, line.split(" ", 1)[1])
-                elif line == "readyok" and self.sent_isready:
+                token, remaining = _next_token(line)
+                if token == "info":
+                    self._info(engine, remaining)
+                elif token == "bestmove":
+                    self._bestmove(engine, remaining)
+                elif line.strip() == "readyok" and self.sent_isready:
                     self._readyok(engine)
                 else:
                     LOGGER.warning("%s: Unexpected engine output: %r", engine, line)
@@ -1682,11 +1674,12 @@ class UciProtocol(Protocol):
                     self._readyok(engine)
 
             def line_received(self, engine: UciProtocol, line: str) -> None:
-                if line.startswith("info "):
-                    self._info(engine, line.split(" ", 1)[1])
-                elif line.startswith("bestmove "):
-                    self._bestmove(engine, line.split(" ", 1)[1])
-                elif line == "readyok" and self.sent_isready:
+                token, remaining = _next_token(line)
+                if token == "info":
+                    self._info(engine, remaining)
+                elif token == "bestmove":
+                    self._bestmove(engine, remaining)
+                elif line.strip() == "readyok" and self.sent_isready:
                     self._readyok(engine)
                 else:
                     LOGGER.warning("%s: Unexpected engine output: %r", engine, line)
@@ -1721,6 +1714,9 @@ class UciProtocol(Protocol):
 
         return await self.communicate(UciAnalysisCommand)
 
+    async def send_game_result(self, board: chess.Board, winner: Optional[Color] = None, game_ending: Optional[str] = None, game_complete: bool = True) -> None:
+        pass
+
     async def quit(self) -> None:
         self.send_line("quit")
         await asyncio.shield(self.returncode)
@@ -1728,39 +1724,56 @@ class UciProtocol(Protocol):
 
 UCI_REGEX = re.compile(r"^[a-h][1-8][a-h][1-8][pnbrqk]?|[PNBRQK]@[a-h][1-8]|0000\Z")
 
+def _create_variation_line(root_board: chess.Board, line: str) -> tuple[list[chess.Move], str]:
+    board = root_board.copy(stack=False)
+    currline: list[chess.Move] = []
+    while True:
+        next_move, remaining_line_after_move = _next_token(line)
+        if UCI_REGEX.match(next_move):
+            currline.append(board.push_uci(next_move))
+            line = remaining_line_after_move
+        else:
+            return currline, line
+
+
 def _parse_uci_info(arg: str, root_board: chess.Board, selector: Info = INFO_ALL) -> InfoDict:
     info: InfoDict = {}
     if not selector:
         return info
 
-    tokens = arg.split(" ")
-    while tokens:
-        parameter = tokens.pop(0)
+    remaining_line = arg
+    while remaining_line:
+        parameter, remaining_line = _next_token(remaining_line)
 
         if parameter == "string":
-            info["string"] = " ".join(tokens)
+            info["string"] = remaining_line
             break
         elif parameter in ["depth", "seldepth", "nodes", "multipv", "currmovenumber", "hashfull", "nps", "tbhits", "cpuload"]:
             try:
-                info[parameter] = int(tokens.pop(0))  # type: ignore
+                number, remaining_line = _next_token(remaining_line)
+                info[parameter] = int(number)  # type: ignore
             except (ValueError, IndexError):
                 LOGGER.error("Exception parsing %s from info: %r", parameter, arg)
         elif parameter == "time":
             try:
-                info["time"] = int(tokens.pop(0)) / 1000.0
+                time_ms, remaining_line = _next_token(remaining_line)
+                info["time"] = int(time_ms) / 1000.0
             except (ValueError, IndexError):
                 LOGGER.error("Exception parsing %s from info: %r", parameter, arg)
         elif parameter == "ebf":
             try:
-                info["ebf"] = float(tokens.pop(0))
+                number, remaining_line = _next_token(remaining_line)
+                info["ebf"] = float(number)
             except (ValueError, IndexError):
                 LOGGER.error("Exception parsing %s from info: %r", parameter, arg)
         elif parameter == "score" and selector & INFO_SCORE:
             try:
-                kind = tokens.pop(0)
-                value = tokens.pop(0)
-                if tokens and tokens[0] in ["lowerbound", "upperbound"]:
-                    info[tokens.pop(0)] = True  # type: ignore
+                kind, remaining_line = _next_token(remaining_line)
+                value, remaining_line = _next_token(remaining_line)
+                token, remaining_after_token = _next_token(remaining_line)
+                if token in ["lowerbound", "upperbound"]:
+                    info[token] = True  # type: ignore
+                    remaining_line = remaining_after_token
                 if kind == "cp":
                     info["score"] = PovScore(Cp(int(value)), root_board.turn)
                 elif kind == "mate":
@@ -1771,7 +1784,8 @@ def _parse_uci_info(arg: str, root_board: chess.Board, selector: Info = INFO_ALL
                 LOGGER.error("Exception parsing score from info: %r", arg)
         elif parameter == "currmove":
             try:
-                info["currmove"] = chess.Move.from_uci(tokens.pop(0))
+                current_move, remaining_line = _next_token(remaining_line)
+                info["currmove"] = chess.Move.from_uci(current_move)
             except (ValueError, IndexError):
                 LOGGER.error("Exception parsing currmove from info: %r", arg)
         elif parameter == "currline" and selector & INFO_CURRLINE:
@@ -1779,13 +1793,10 @@ def _parse_uci_info(arg: str, root_board: chess.Board, selector: Info = INFO_ALL
                 if "currline" not in info:
                     info["currline"] = {}
 
-                cpunr = int(tokens.pop(0))
-                currline: List[chess.Move] = []
+                cpunr_text, remaining_line = _next_token(remaining_line)
+                cpunr = int(cpunr_text)
+                currline, remaining_line = _create_variation_line(root_board, remaining_line)
                 info["currline"][cpunr] = currline
-
-                board = root_board.copy(stack=False)
-                while tokens and UCI_REGEX.match(tokens[0]):
-                    currline.append(board.push_uci(tokens.pop(0)))
             except (ValueError, IndexError):
                 LOGGER.error("Exception parsing currline from info: %r, position at root: %s", arg, root_board.fen())
         elif parameter == "refutation" and selector & INFO_REFUTATION:
@@ -1794,27 +1805,25 @@ def _parse_uci_info(arg: str, root_board: chess.Board, selector: Info = INFO_ALL
                     info["refutation"] = {}
 
                 board = root_board.copy(stack=False)
-                refuted = board.push_uci(tokens.pop(0))
+                refuted_text, remaining_line = _next_token(remaining_line)
+                refuted = board.push_uci(refuted_text)
 
-                refuted_by: List[chess.Move] = []
+                refuted_by, remaining_line = _create_variation_line(board, remaining_line)
                 info["refutation"][refuted] = refuted_by
-
-                while tokens and UCI_REGEX.match(tokens[0]):
-                    refuted_by.append(board.push_uci(tokens.pop(0)))
             except (ValueError, IndexError):
                 LOGGER.error("Exception parsing refutation from info: %r, position at root: %s", arg, root_board.fen())
         elif parameter == "pv" and selector & INFO_PV:
             try:
-                pv: List[chess.Move] = []
+                pv, remaining_line = _create_variation_line(root_board, remaining_line)
                 info["pv"] = pv
-                board = root_board.copy(stack=False)
-                while tokens and UCI_REGEX.match(tokens[0]):
-                    pv.append(board.push_uci(tokens.pop(0)))
             except (ValueError, IndexError):
                 LOGGER.error("Exception parsing pv from info: %r, position at root: %s", arg, root_board.fen())
         elif parameter == "wdl":
             try:
-                info["wdl"] = PovWdl(Wdl(int(tokens.pop(0)), int(tokens.pop(0)), int(tokens.pop(0))), root_board.turn)
+                wins, remaining_line = _next_token(remaining_line)
+                draws, remaining_line = _next_token(remaining_line)
+                losses, remaining_line = _next_token(remaining_line)
+                info["wdl"] = PovWdl(Wdl(int(wins), int(draws), int(losses)), root_board.turn)
             except (ValueError, IndexError):
                 LOGGER.error("Exception parsing wdl from info: %r", arg)
 
@@ -1845,10 +1854,18 @@ def _parse_uci_bestmove(board: chess.Board, args: str) -> BestMove:
     return BestMove(move, ponder)
 
 
+def _chain_config(a: ConfigMapping, b: ConfigMapping) -> Iterator[Tuple[str, ConfigValue]]:
+    for name, value in a.items():
+        yield name, value
+    for name, value in b.items():
+        if name not in a:
+            yield name, value
+
+
 class UciOptionMap(MutableMapping[str, T]):
     """Dictionary with case-insensitive keys."""
 
-    def __init__(self, data: Optional[Union[Iterable[Tuple[str, T]]]] = None, **kwargs: T) -> None:
+    def __init__(self, data: Optional[Iterable[Tuple[str, T]]] = None, **kwargs: T) -> None:
         self._store: Dict[str, Tuple[str, T]] = {}
         if data is None:
             data = {}
@@ -1864,7 +1881,7 @@ class UciOptionMap(MutableMapping[str, T]):
         del self._store[key.lower()]
 
     def __iter__(self) -> Iterator[str]:
-        return (casedkey for casedkey, mappedvalue in self._store.values())
+        return (casedkey for casedkey, _ in self._store.values())
 
     def __len__(self) -> int:
         return len(self._store)
@@ -1909,11 +1926,15 @@ class XBoardProtocol(Protocol):
         self.options = {
             "random": Option("random", "check", False, None, None, None),
             "computer": Option("computer", "check", False, None, None, None),
+            "name": Option("name", "string", "", None, None, None),
+            "engine_rating": Option("engine_rating", "spin", 0, None, None, None),
+            "opponent_rating": Option("opponent_rating", "spin", 0, None, None, None)
         }
         self.config: Dict[str, ConfigValue] = {}
         self.target_config: Dict[str, ConfigValue] = {}
         self.board = chess.Board()
         self.game: object = None
+        self.clock_id: object = None
         self.first_game = True
 
     async def initialize(self) -> None:
@@ -1932,10 +1953,11 @@ class XBoardProtocol(Protocol):
                 self.end(engine)
 
             def line_received(self, engine: XBoardProtocol, line: str) -> None:
-                if line.startswith("#"):
+                token, remaining = _next_token(line)
+                if token.startswith("#"):
                     pass
-                elif line.startswith("feature "):
-                    self._feature(engine, line.split(" ", 1)[1])
+                elif token == "feature":
+                    self._feature(engine, remaining)
                 elif XBOARD_ERROR_REGEX.match(line):
                     raise EngineError(line)
 
@@ -2014,13 +2036,14 @@ class XBoardProtocol(Protocol):
 
         self.send_line(f"variant {variant}")
 
-    def _new(self, board: chess.Board, game: object, options: ConfigMapping) -> None:
+    def _new(self, board: chess.Board, game: object, options: ConfigMapping, opponent: Optional[Opponent] = None) -> None:
         self._configure(options)
+        self._configure(self._opponent_configuration(opponent=opponent))
 
         # Set up starting position.
         root = board.root()
-        new_options = "random" in options or "computer" in options
-        new_game = self.first_game or self.game != game or new_options or root != self.board.root()
+        new_options = any(param in options for param in ("random", "computer"))
+        new_game = self.first_game or self.game != game or new_options or opponent or root != self.board.root()
         self.game = game
         self.first_game = False
         if new_game:
@@ -2035,6 +2058,16 @@ class XBoardProtocol(Protocol):
 
             if self.config.get("random"):
                 self.send_line("random")
+
+            opponent_name = self.config.get("name")
+            if opponent_name and self.features.get("name", True):
+                self.send_line(f"name {opponent_name}")
+
+            opponent_rating = self.config.get("opponent_rating")
+            engine_rating = self.config.get("engine_rating")
+            if engine_rating or opponent_rating:
+                self.send_line(f"rating {engine_rating or 0} {opponent_rating or 0}")
+
             if self.config.get("computer"):
                 self.send_line("computer")
 
@@ -2089,7 +2122,7 @@ class XBoardProtocol(Protocol):
 
         return await self.communicate(XBoardPingCommand)
 
-    async def play(self, board: chess.Board, limit: Limit, *, game: object = None, info: Info = INFO_NONE, ponder: bool = False, draw_offered: bool = False, root_moves: Optional[Iterable[chess.Move]] = None, options: ConfigMapping = {}) -> PlayResult:
+    async def play(self, board: chess.Board, limit: Limit, *, game: object = None, info: Info = INFO_NONE, ponder: bool = False, draw_offered: bool = False, root_moves: Optional[Iterable[chess.Move]] = None, options: ConfigMapping = {}, opponent: Optional[Opponent] = None) -> PlayResult:
         if root_moves is not None:
             raise EngineError("play with root_moves, but xboard supports 'include' only in analysis mode")
 
@@ -2101,34 +2134,31 @@ class XBoardProtocol(Protocol):
                 self.pong_after_ponder: Optional[str] = None
 
                 # Set game, position and configure.
-                engine._new(board, game, options)
+                engine._new(board, game, options, opponent)
 
                 # Limit or time control.
                 clock = limit.white_clock if board.turn else limit.black_clock
                 increment = limit.white_inc if board.turn else limit.black_inc
-                if limit.remaining_moves or clock is not None or increment is not None:
-                    base_mins, base_secs = divmod(int(clock or 0), 60)
-                    engine.send_line(f"level {limit.remaining_moves or 0} {base_mins}:{base_secs:02d} {increment or 0}")
-
+                if limit.clock_id is None or limit.clock_id != engine.clock_id:
+                    self._send_time_control(engine, clock, increment)
+                engine.clock_id = limit.clock_id
                 if limit.nodes is not None:
                     if limit.time is not None or limit.white_clock is not None or limit.black_clock is not None or increment is not None:
                         raise EngineError("xboard does not support mixing node limits with time limits")
 
                     if "nps" not in engine.features:
-                        LOGGER.warning("%s: Engine did not declare explicit support for node limits (feature nps=?)")
+                        LOGGER.warning("%s: Engine did not explicitly declare support for node limits (feature nps=?)")
                     elif not engine.features["nps"]:
                         raise EngineError("xboard engine does not support node limits (feature nps=0)")
 
                     engine.send_line("nps 1")
                     engine.send_line(f"st {max(1, int(limit.nodes))}")
-                if limit.time is not None:
-                    engine.send_line(f"st {max(0.01, limit.time)}")
                 if limit.depth is not None:
                     engine.send_line(f"sd {max(1, int(limit.depth))}")
                 if limit.white_clock is not None:
-                    engine.send_line("{} {}".format("time" if board.turn else "otim", max(1, int(limit.white_clock * 100))))
+                    engine.send_line("{} {}".format("time" if board.turn else "otim", max(1, round(limit.white_clock * 100))))
                 if limit.black_clock is not None:
-                    engine.send_line("{} {}".format("otim" if board.turn else "time", max(1, int(limit.black_clock * 100))))
+                    engine.send_line("{} {}".format("otim" if board.turn else "time", max(1, round(limit.black_clock * 100))))
 
                 if draw_offered and engine.features.get("draw", 1):
                     engine.send_line("draw")
@@ -2139,30 +2169,35 @@ class XBoardProtocol(Protocol):
                 engine.send_line("go")
 
             def line_received(self, engine: XBoardProtocol, line: str) -> None:
-                if line.startswith("move "):
-                    self._move(engine, line.split(" ", 1)[1])
-                elif line.startswith("Hint: "):
-                    self._hint(engine, line.split(" ", 1)[1])
-                elif line == self.pong_after_move:
-                    if not self.result.done():
-                        self.result.set_result(self.play_result)
-                    if not ponder:
+                token, remaining = _next_token(line)
+                if token == "move":
+                    self._move(engine, remaining.strip())
+                elif token == "Hint:":
+                    self._hint(engine, remaining.strip())
+                elif token == "pong":
+                    pong_line = f"{token} {remaining.strip()}"
+                    if pong_line == self.pong_after_move:
+                        if not self.result.done():
+                            self.result.set_result(self.play_result)
+                        if not ponder:
+                            self.set_finished()
+                    elif pong_line == self.pong_after_ponder:
+                        if not self.result.done():
+                            self.result.set_result(self.play_result)
                         self.set_finished()
-                elif line == self.pong_after_ponder:
-                    if not self.result.done():
-                        self.result.set_result(self.play_result)
-                    self.set_finished()
-                elif line == "offer draw":
+                elif f"{token} {remaining.strip()}" == "offer draw":
                     if not self.result.done():
                         self.play_result.draw_offered = True
                     self._ping_after_move(engine)
-                elif line == "resign":
+                elif line.strip() == "resign":
                     if not self.result.done():
                         self.play_result.resigned = True
                     self._ping_after_move(engine)
-                elif line.startswith("1-0") or line.startswith("0-1") or line.startswith("1/2-1/2"):
+                elif token in ["1-0", "0-1", "1/2-1/2"]:
+                    if "resign" in line and not self.result.done():
+                        self.play_result.resigned = True
                     self._ping_after_move(engine)
-                elif line.startswith("#"):
+                elif token.startswith("#"):
                     pass
                 elif XBOARD_ERROR_REGEX.match(line):
                     engine.first_game = True  # Board state might no longer be in sync
@@ -2171,6 +2206,13 @@ class XBoardProtocol(Protocol):
                     self._post(engine, line)
                 else:
                     LOGGER.warning("%s: Unexpected engine output: %r", engine, line)
+
+            def _send_time_control(self, engine: XBoardProtocol, clock: Optional[float], increment: Optional[float]) -> None:
+                if limit.remaining_moves or clock is not None or increment is not None:
+                    base_mins, base_secs = divmod(int(clock or 0), 60)
+                    engine.send_line(f"level {limit.remaining_moves or 0} {base_mins}:{base_secs:02d} {increment or 0}")
+                if limit.time is not None:
+                    engine.send_line(f"st {max(0.01, limit.time)}")
 
             def _post(self, engine: XBoardProtocol, line: str) -> None:
                 if not self.result.done():
@@ -2262,11 +2304,12 @@ class XBoardProtocol(Protocol):
                     self.time_limit_handle = None
 
             def line_received(self, engine: XBoardProtocol, line: str) -> None:
-                if line.startswith("#"):
+                token, remaining = _next_token(line)
+                if token.startswith("#"):
                     pass
                 elif len(line.split()) >= 4 and line.lstrip()[0].isdigit():
                     self._post(engine, line)
-                elif line == self.final_pong:
+                elif f"{token} {remaining.strip()}" == self.final_pong:
                     self.end(engine)
                 elif XBOARD_ERROR_REGEX.match(line):
                     engine.first_game = True  # Board state might no longer be in sync
@@ -2333,7 +2376,7 @@ class XBoardProtocol(Protocol):
 
         self.config[name] = value = option.parse(value)
 
-        if name in ["random", "computer"]:
+        if name in ["random", "computer", "name", "engine_rating", "opponent_rating"]:
             # Applied in _new.
             pass
         elif name in ["memory", "cores"] or name.startswith("egtpath "):
@@ -2348,7 +2391,7 @@ class XBoardProtocol(Protocol):
             self.send_line(f"option {name}={value}")
 
     def _configure(self, options: ConfigMapping) -> None:
-        for name, value in collections.ChainMap(options, self.target_config).items():
+        for name, value in _chain_config(options, self.target_config):
             if name.lower() in MANAGED_OPTIONS:
                 raise EngineError(f"cannot set {name} which is automatically managed")
             self._setoption(name, value)
@@ -2362,6 +2405,57 @@ class XBoardProtocol(Protocol):
                 self.set_finished()
 
         return await self.communicate(XBoardConfigureCommand)
+
+    def _opponent_configuration(self, *, opponent: Optional[Opponent] = None, engine_rating: Optional[int] = None) -> ConfigMapping:
+        if opponent is None:
+            return {}
+
+        opponent_info: Dict[str, Union[int, bool, str]] = {"engine_rating": engine_rating or self.target_config.get("engine_rating") or 0,
+                                                           "opponent_rating": opponent.rating or 0,
+                                                           "computer": opponent.is_engine or False}
+
+        if opponent.name and self.features.get("name", True):
+            opponent_info["name"] = f"{opponent.title or ''} {opponent.name}".strip()
+
+        return opponent_info
+
+    async def send_opponent_information(self, *, opponent: Optional[Opponent] = None, engine_rating: Optional[int] = None) -> None:
+        return await self.configure(self._opponent_configuration(opponent=opponent, engine_rating=engine_rating))
+
+    async def send_game_result(self, board: chess.Board, winner: Optional[Color] = None, game_ending: Optional[str] = None, game_complete: bool = True) -> None:
+        class XBoardGameResultCommand(BaseCommand[XBoardProtocol, None]):
+            def start(self, engine: XBoardProtocol) -> None:
+                if game_ending and any(c in game_ending for c in "{}\n\r"):
+                    raise EngineError(f"invalid line break or curly braces in game ending message: {game_ending!r}")
+
+                engine._new(board, engine.game, {})  # Send final moves to engine.
+
+                outcome = board.outcome(claim_draw=True)
+
+                if not game_complete:
+                    result = "*"
+                    ending = game_ending or ""
+                elif winner is not None or game_ending:
+                    result = "1-0" if winner == chess.WHITE else "0-1" if winner == chess.BLACK else "1/2-1/2"
+                    ending = game_ending or ""
+                elif outcome is not None and outcome.winner is not None:
+                    result = outcome.result()
+                    winning_color = "White" if outcome.winner == chess.WHITE else "Black"
+                    is_checkmate = outcome.termination == chess.Termination.CHECKMATE
+                    ending = f"{winning_color} {'mates' if is_checkmate else 'variant win'}"
+                elif outcome is not None:
+                    result = outcome.result()
+                    ending = outcome.termination.name.capitalize().replace("_", " ")
+                else:
+                    result = "*"
+                    ending = ""
+
+                ending_text = f"{{{ending}}}" if ending else ""
+                engine.send_line(f"result {result} {ending_text}".strip())
+                self.result.set_result(None)
+                self.set_finished()
+
+        return await self.communicate(XBoardGameResultCommand)
 
     async def quit(self) -> None:
         self.send_line("quit")
@@ -2471,6 +2565,23 @@ def _parse_xboard_post(line: str, root_board: chess.Board, selector: Info = INFO
     return info
 
 
+def _next_token(line: str) -> tuple[str, str]:
+    """Get the next token in a whitespace-delimited line of text.
+
+    The result is returned as a 2-part tuple of strings.
+
+    If the input line is empty or all whitespace, then the result is two
+    empty strings.
+
+    If the input line is not empty and not completely whitespace, then
+    the first element of the returned tuple is a single word with
+    leading and trailing whitespace removed. The second element is the
+    unchanged rest of the line."""
+
+    parts = line.split(maxsplit=1)
+    return (parts[0] if parts else "", parts[1] if len(parts) == 2 else "")
+
+
 class BestMove:
     """Returned by :func:`chess.engine.AnalysisResult.wait()`."""
 
@@ -2499,7 +2610,7 @@ class AnalysisResult:
     Automatically stops the analysis when used as a context manager.
     """
 
-    multipv: List[chess.engine.InfoDict]
+    multipv: List[InfoDict]
     """
     A list of dictionaries with aggregated information sent by the engine.
     One item for each root move.
@@ -2554,7 +2665,7 @@ class AnalysisResult:
             self._stop = None
 
     async def wait(self) -> BestMove:
-        """Waits until the analysis is complete (or stopped)."""
+        """Waits until the analysis is finished."""
         return await self._finished
 
     async def get(self) -> InfoDict:
@@ -2581,15 +2692,26 @@ class AnalysisResult:
 
         return info
 
+    def would_block(self) -> bool:
+        """
+        Checks if calling :func:`~chess.engine.AnalysisResult.get()`,
+        calling :func:`~chess.engine.AnalysisResult.next()`,
+        or advancing the iterator one step would require waiting for the
+        engine.
+
+        These functions would return immediately if information is
+        pending (queue is not
+        :func:`empty <chess.engine.AnalysisResult.empty()>`) or if the search
+        is finished.
+        """
+        return not self._seen_kork and self._queue.empty()
+
     def empty(self) -> bool:
         """
-        Checks if all information has been consumed.
+        Checks if all current information has been consumed.
 
         If the queue is empty, but the analysis is still ongoing, then further
         information can become available in the future.
-
-        If the queue is not empty, then the next call to
-        :func:`~chess.engine.AnalysisResult.get()` will return instantly.
         """
         return self._seen_kork or self._queue.qsize() <= self._posted_kork
 
@@ -2665,6 +2787,10 @@ async def popen_xboard(command: Union[str, List[str]], *, setpgrp: bool = False,
     return transport, protocol
 
 
+async def _async(sync: Callable[[], T]) -> T:
+    return sync()
+
+
 class SimpleEngine:
     """
     Synchronous wrapper around a transport and engine protocol pair. Provides
@@ -2707,20 +2833,16 @@ class SimpleEngine:
 
     @property
     def options(self) -> MutableMapping[str, Option]:
-        async def _get() -> MutableMapping[str, Option]:
-            return copy.copy(self.protocol.options)
-
         with self._not_shut_down():
-            future = asyncio.run_coroutine_threadsafe(_get(), self.protocol.loop)
+            coro = _async(lambda: copy.copy(self.protocol.options))
+            future = asyncio.run_coroutine_threadsafe(coro, self.protocol.loop)
         return future.result()
 
     @property
     def id(self) -> Mapping[str, str]:
-        async def _get() -> Mapping[str, str]:
-            return self.protocol.id.copy()
-
         with self._not_shut_down():
-            future = asyncio.run_coroutine_threadsafe(_get(), self.protocol.loop)
+            coro = _async(lambda: self.protocol.id.copy())
+            future = asyncio.run_coroutine_threadsafe(coro, self.protocol.loop)
         return future.result()
 
     def communicate(self, command_factory: Callable[[Protocol], BaseCommand[Protocol, T]]) -> T:
@@ -2735,16 +2857,24 @@ class SimpleEngine:
             future = asyncio.run_coroutine_threadsafe(coro, self.protocol.loop)
         return future.result()
 
+    def send_opponent_information(self, *, opponent: Optional[Opponent] = None, engine_rating: Optional[int] = None) -> None:
+        with self._not_shut_down():
+            coro = asyncio.wait_for(
+                self.protocol.send_opponent_information(opponent=opponent, engine_rating=engine_rating),
+                self.timeout)
+            future = asyncio.run_coroutine_threadsafe(coro, self.protocol.loop)
+        return future.result()
+
     def ping(self) -> None:
         with self._not_shut_down():
             coro = asyncio.wait_for(self.protocol.ping(), self.timeout)
             future = asyncio.run_coroutine_threadsafe(coro, self.protocol.loop)
         return future.result()
 
-    def play(self, board: chess.Board, limit: Limit, *, game: object = None, info: Info = INFO_NONE, ponder: bool = False, draw_offered: bool = False, root_moves: Optional[Iterable[chess.Move]] = None, options: ConfigMapping = {}) -> PlayResult:
+    def play(self, board: chess.Board, limit: Limit, *, game: object = None, info: Info = INFO_NONE, ponder: bool = False, draw_offered: bool = False, root_moves: Optional[Iterable[chess.Move]] = None, options: ConfigMapping = {}, opponent: Optional[Opponent] = None) -> PlayResult:
         with self._not_shut_down():
             coro = asyncio.wait_for(
-                self.protocol.play(board, limit, game=game, info=info, ponder=ponder, draw_offered=draw_offered, root_moves=root_moves, options=options),
+                self.protocol.play(board, limit, game=game, info=info, ponder=ponder, draw_offered=draw_offered, root_moves=root_moves, options=options, opponent=opponent),
                 self._timeout_for(limit))
             future = asyncio.run_coroutine_threadsafe(coro, self.protocol.loop)
         return future.result()
@@ -2771,6 +2901,12 @@ class SimpleEngine:
             future = asyncio.run_coroutine_threadsafe(coro, self.protocol.loop)
         return SimpleAnalysisResult(self, future.result())
 
+    def send_game_result(self, board: chess.Board, winner: Optional[Color] = None, game_ending: Optional[str] = None, game_complete: bool = True) -> None:
+        with self._not_shut_down():
+            coro = asyncio.wait_for(self.protocol.send_game_result(board, winner, game_ending, game_complete), self.timeout)
+            future = asyncio.run_coroutine_threadsafe(coro, self.protocol.loop)
+        return future.result()
+
     def quit(self) -> None:
         with self._not_shut_down():
             coro = asyncio.wait_for(self.protocol.quit(), self.timeout)
@@ -2791,7 +2927,7 @@ class SimpleEngine:
                 self.protocol.loop.call_soon_threadsafe(_shutdown)
 
     @classmethod
-    def popen(cls, Protocol: Type[Protocol], command: Union[str, List[str]], *, timeout: Optional[float] = 10.0, debug: bool = False, setpgrp: bool = False, **popen_args: Any) -> SimpleEngine:
+    def popen(cls, Protocol: Type[Protocol], command: Union[str, List[str]], *, timeout: Optional[float] = 10.0, debug: Optional[bool] = None, setpgrp: bool = False, **popen_args: Any) -> SimpleEngine:
         async def background(future: concurrent.futures.Future[SimpleEngine]) -> None:
             transport, protocol = await Protocol.popen(command, setpgrp=setpgrp, **popen_args)
             threading.current_thread().name = f"{cls.__name__} (pid={transport.get_pid()})"
@@ -2808,7 +2944,7 @@ class SimpleEngine:
         return run_in_background(background, name=f"{cls.__name__} (command={command!r})", debug=debug)
 
     @classmethod
-    def popen_uci(cls, command: Union[str, List[str]], *, timeout: Optional[float] = 10.0, debug: bool = False, setpgrp: bool = False, **popen_args: Any) -> SimpleEngine:
+    def popen_uci(cls, command: Union[str, List[str]], *, timeout: Optional[float] = 10.0, debug: Optional[bool] = None, setpgrp: bool = False, **popen_args: Any) -> SimpleEngine:
         """
         Spawns and initializes a UCI engine.
         Returns a :class:`~chess.engine.SimpleEngine` instance.
@@ -2816,7 +2952,7 @@ class SimpleEngine:
         return cls.popen(UciProtocol, command, timeout=timeout, debug=debug, setpgrp=setpgrp, **popen_args)
 
     @classmethod
-    def popen_xboard(cls, command: Union[str, List[str]], *, timeout: Optional[float] = 10.0, debug: bool = False, setpgrp: bool = False, **popen_args: Any) -> SimpleEngine:
+    def popen_xboard(cls, command: Union[str, List[str]], *, timeout: Optional[float] = 10.0, debug: Optional[bool] = None, setpgrp: bool = False, **popen_args: Any) -> SimpleEngine:
         """
         Spawns and initializes an XBoard engine.
         Returns a :class:`~chess.engine.SimpleEngine` instance.
@@ -2846,20 +2982,16 @@ class SimpleAnalysisResult:
 
     @property
     def info(self) -> InfoDict:
-        async def _get() -> InfoDict:
-            return self.inner.info.copy()
-
         with self.simple_engine._not_shut_down():
-            future = asyncio.run_coroutine_threadsafe(_get(), self.simple_engine.protocol.loop)
+            coro = _async(lambda: self.inner.info.copy())
+            future = asyncio.run_coroutine_threadsafe(coro, self.simple_engine.protocol.loop)
         return future.result()
 
     @property
     def multipv(self) -> List[InfoDict]:
-        async def _get() -> List[InfoDict]:
-            return [info.copy() for info in self.inner.multipv]
-
         with self.simple_engine._not_shut_down():
-            future = asyncio.run_coroutine_threadsafe(_get(), self.simple_engine.protocol.loop)
+            coro = _async(lambda: [info.copy() for info in self.inner.multipv])
+            future = asyncio.run_coroutine_threadsafe(coro, self.simple_engine.protocol.loop)
         return future.result()
 
     def stop(self) -> None:
@@ -2871,12 +3003,14 @@ class SimpleAnalysisResult:
             future = asyncio.run_coroutine_threadsafe(self.inner.wait(), self.simple_engine.protocol.loop)
         return future.result()
 
-    def empty(self) -> bool:
-        async def _empty() -> bool:
-            return self.inner.empty()
-
+    def would_block(self) -> bool:
         with self.simple_engine._not_shut_down():
-            future = asyncio.run_coroutine_threadsafe(_empty(), self.simple_engine.protocol.loop)
+            future = asyncio.run_coroutine_threadsafe(_async(self.inner.would_block), self.simple_engine.protocol.loop)
+        return future.result()
+
+    def empty(self) -> bool:
+        with self.simple_engine._not_shut_down():
+            future = asyncio.run_coroutine_threadsafe(_async(self.inner.empty), self.simple_engine.protocol.loop)
         return future.result()
 
     def get(self) -> InfoDict:
